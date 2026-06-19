@@ -1,0 +1,4 @@
+ollama
+duckduckgo-search
+rich
+chromadb
