@@ -17,14 +17,16 @@ from src.core.config import (
     CHROMADB_NIVEL1_THRESHOLD,
     RAG_MAX_CHARS,
     RAG_MAX_DOCS,
+    SINAIS_WEB,
 )
+from src.core.utils import normalizar
 from src.core.classificador import classificar_complexidade, explicar_nivel
-from src.core.llm import chamar_llm, resumir_conversa
+from src.core.llm import chamar_llm, resumir_conversa, verificar_modelo_disponivel
 from src.memoria.cache import Cache
 from src.memoria.sqlite import Memoria
 from src.memoria.semantica import MemoriaSemantica
 from src.ferramentas.resolver import executar_ferramentas
-from src.ferramentas.web import pesquisar_web
+from src.ferramentas.web import pesquisar_web, pesquisar_clima, pesquisar_documentacao, pesquisar_cotacao
 
 console = Console()
 
@@ -68,9 +70,10 @@ class SistemaAgentes:
             self._salvar(pergunta, resultado_ferramenta, nome_agente, nivel=1, inicio=inicio)
             return resultado_ferramenta
 
-        # 1b. Cache exato
+        # 1b. Cache exato — ignorado para dados em tempo real
         cache_key = f"{nome_agente}:{pergunta}"
-        resposta_cache = self.cache.buscar(cache_key)
+        precisa_web = self._precisa_web(pergunta)
+        resposta_cache = None if precisa_web else self.cache.buscar(cache_key)
         if resposta_cache:
             console.print("[dim]📋 Nível 1 • Cache[/dim]")
             console.print(resposta_cache, style="green")
@@ -101,9 +104,9 @@ class SistemaAgentes:
 
         if nivel == 2:
             contexto_busca = ""
-            if nome_agente == "pesquisador":
-                console.print("[dim]🔍 Pesquisando...[/dim]")
-                contexto_busca = pesquisar_web(pergunta, max_resultados=3)
+            if nome_agente == "pesquisador" or precisa_web:
+                console.print("[dim]🔍 Pesquisando na web...[/dim]")
+                contexto_busca = self._buscar_web_contextual(pergunta, max_resultados=3)
 
             mensagens = self._montar_contexto(2, contexto_busca, pergunta)
 
@@ -134,9 +137,9 @@ class SistemaAgentes:
         # ═══════════════════════════════════════════
 
         contexto_busca = ""
-        if nome_agente == "pesquisador":
+        if nome_agente == "pesquisador" or precisa_web:
             console.print("[dim]🔍 Pesquisando na web...[/dim]")
-            contexto_busca = pesquisar_web(pergunta, max_resultados=5)
+            contexto_busca = self._buscar_web_contextual(pergunta, max_resultados=5)
 
         # RAG: enriquecer com ChromaDB
         contexto_rag = ""
@@ -152,8 +155,21 @@ class SistemaAgentes:
             contexto_rag=contexto_rag,
         )
 
+        modelo_profundo = agente["modelo_profundo"]
+        if not verificar_modelo_disponivel(modelo_profundo):
+            # Tenta encontrar o melhor modelo instalado antes de cair no rapido
+            candidatos = ["qwen3:4b", "qwen2.5:3b", "llama3.2:3b", agente["modelo_rapido"]]
+            modelo_profundo = next(
+                (m for m in candidatos if verificar_modelo_disponivel(m)),
+                agente["modelo_rapido"],
+            )
+            console.print(
+                f"[yellow]⚠️  Modelo profundo '{agente['modelo_profundo']}' não instalado. "
+                f"Usando '{modelo_profundo}' como fallback.[/yellow]"
+            )
+
         resultado = chamar_llm(
-            modelo=agente["modelo_profundo"],
+            modelo=modelo_profundo,
             system_prompt=self._system_prompt_com_rag(agente["system_prompt"], bool(contexto_rag)),
             mensagens=mensagens,
             stream=True,
@@ -209,6 +225,46 @@ class SistemaAgentes:
         return "\n\n".join(blocos)
 
     @staticmethod
+    def _precisa_web(pergunta: str) -> bool:
+        """Detecta se a pergunta requer dados em tempo real ou documentação externa."""
+        texto = normalizar(pergunta)
+        return any(normalizar(sinal) in texto for sinal in SINAIS_WEB)
+
+    @staticmethod
+    def _buscar_web_contextual(pergunta: str, max_resultados: int = 3) -> str:
+        """Escolhe a ferramenta de busca mais adequada para o tipo de consulta."""
+        texto = pergunta.lower()
+
+        # Clima / temperatura
+        _termos_clima = ["temperatura", "clima em", "tempo em", "previsão do tempo",
+                         "vai chover", "chuva em", "calor em", "frio em", "umidade"]
+        if any(t in texto for t in _termos_clima):
+            import re
+            # Tenta extrair cidade da pergunta
+            m = re.search(
+                r"(?:em|n[ao]|para|de)\s+([A-Za-zÀ-ú]{3,}(?:\s+[A-Za-zÀ-ú]{2,})?)",
+                pergunta, re.IGNORECASE
+            )
+            cidade = m.group(1) if m else pergunta
+            return pesquisar_clima(cidade)
+
+        # Documentação
+        _termos_docs = ["documentação", "docs", "manual", "referência", "how to",
+                        "tutorial de", "tutorial do", "guia de", "guia do",
+                        "como instalar", "como usar", "como configurar", "api do", "api de"]
+        if any(t in texto for t in _termos_docs):
+            return pesquisar_documentacao(pergunta, max_resultados)
+
+        # Cotações
+        _termos_cotacao = ["cotação", "dólar", "euro", "bitcoin", "câmbio",
+                           "bolsa", "ibovespa", "nasdaq", "selic", "cripto"]
+        if any(t in texto for t in _termos_cotacao):
+            return pesquisar_cotacao(pergunta)
+
+        # Genérico
+        return pesquisar_web(pergunta, max_resultados)
+
+    @staticmethod
     def _deve_promover_para_profundo(pergunta: str, resposta: str) -> bool:
         """Promove para nível profundo quando a saída rápida é fraca para a pergunta."""
         if not resposta:
@@ -222,6 +278,11 @@ class SistemaAgentes:
             "não tenho informação",
             "não encontrei",
             "não posso afirmar",
+            "não posso fornecer",
+            "não consigo fornecer",
+            "não tenho acesso",
+            "não possuo acesso",
+            "recomendo consultar",
             "talvez",
             "depende",
         ]
@@ -252,17 +313,31 @@ class SistemaAgentes:
                 "content": f"Conhecimento relevante da base:\n{contexto_rag}"
             })
 
+        # Resultados web como system message — garante que modelos pequenos não ignorem
+        if contexto_busca:
+            mensagens.append({
+                "role": "system",
+                "content": (
+                    "DADOS ATUAIS OBTIDOS DA WEB — use exclusivamente estes dados para responder. "
+                    "NUNCA diga que não tem acesso a informações em tempo real quando estes dados estiverem presentes.\n\n"
+                    f"{contexto_busca}"
+                ),
+            })
+
         historico = self.memoria.ultimas_mensagens(n_msgs)
         for msg in historico:
             mensagens.append({"role": msg["role"], "content": msg["content"]})
 
-        conteudo = pergunta
+        # Para modelos pequenos: inclui dados também na mensagem user para garantir grounding
         if contexto_busca:
             conteudo = (
-                f"Pergunta: {pergunta}\n\n"
-                f"Resultados da pesquisa:\n{contexto_busca}\n\n"
-                "Analise e responda."
+                f"{pergunta}\n\n"
+                f"[Dados obtidos agora da web — responda com base exclusivamente nestes dados]:\n"
+                f"{contexto_busca[:1500]}"
             )
+        else:
+            conteudo = pergunta
+
         mensagens.append({"role": "user", "content": conteudo})
 
         return mensagens

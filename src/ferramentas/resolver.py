@@ -229,12 +229,30 @@ def verificar_ferramenta_calculo(texto: str) -> str | None:
     return None
 
 
+def verificar_ferramenta_saudacao(texto: str) -> str | None:
+    """Responde saudações curtas de forma determinística."""
+    base = texto.strip().lower()
+    saudacoes = {
+        "oi", "olá", "ola", "e ai", "e aí", "bom dia", "boa tarde", "boa noite", "hello", "hey"
+    }
+    if base in saudacoes:
+        return (
+            "Olá! Estou pronto para ajudar. "
+            "Você pode pedir código, análise, leitura/criação de arquivos e execução de comandos locais."
+        )
+    return None
+
+
 def executar_ferramentas(texto: str) -> str | None:
     """
     Tenta resolver com ferramentas ANTES de enviar ao LLM.
     Retorna None se nenhuma ferramenta se aplica.
     """
     resultado = verificar_ferramenta_data(texto)
+    if resultado:
+        return resultado
+
+    resultado = verificar_ferramenta_saudacao(texto)
     if resultado:
         return resultado
 

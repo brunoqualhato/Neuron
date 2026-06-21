@@ -126,8 +126,32 @@ def resumir_conversa(modelo: str, mensagens: list[dict]) -> str:
 def verificar_modelo_disponivel(modelo: str) -> bool:
     """Verifica se o modelo está disponível localmente."""
     try:
-        modelos = ollama.list()
-        nomes = [m["name"] for m in modelos.get("models", [])]
-        return modelo in nomes or f"{modelo}:latest" in nomes
+        resposta = ollama.list()
+
+        nomes_raw: list[str] = []
+
+        # Formato antigo/JSON-like
+        if isinstance(resposta, dict):
+            for m in resposta.get("models", []):
+                if isinstance(m, dict):
+                    nomes_raw.append(m.get("name") or m.get("model") or "")
+
+        # Formato atual da lib: ListResponse com lista de objetos Model
+        elif hasattr(resposta, "models"):
+            for m in getattr(resposta, "models", []):
+                nomes_raw.append(getattr(m, "model", "") or getattr(m, "name", ""))
+
+        # Normaliza para evitar falso negativo por case/tag.
+        nomes = {n.strip().lower() for n in nomes_raw if n}
+        nomes_base = {n.split(":", 1)[0] for n in nomes}
+
+        alvo = modelo.strip().lower()
+        alvo_base = alvo.split(":", 1)[0]
+
+        # Se o modelo solicitado já tem tag, não aceitar apenas o nome-base.
+        if ":" in alvo:
+            return alvo in nomes
+
+        return alvo in nomes or f"{alvo}:latest" in nomes or alvo_base in nomes_base
     except Exception:
         return False

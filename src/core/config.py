@@ -95,6 +95,17 @@ NIVEIS = {
 # ══════════════════════════════════════════════════════════════
 
 AGENTES = {
+    "generalista": {
+        "modelo_rapido": MODELOS["rapido"],
+        "modelo_profundo": MODELOS["rapido"],
+        "system_prompt": (
+            "Você é um assistente generalista eficiente para dúvidas abertas e mensagens informais. "
+            "Responda curto, claro e objetivo. "
+            "Se a pergunta exigir especialização técnica profunda, diga isso e peça contexto adicional."
+        ),
+        "palavras_chave": [],
+        "nivel_preferido": 2,
+    },
     "programador": {
         "modelo_rapido": MODELOS["rapido"],
         "modelo_profundo": MODELOS["coder"],
@@ -116,14 +127,32 @@ AGENTES = {
         "modelo_profundo": MODELOS["completo"],
         "system_prompt": (
             "Você é um pesquisador especialista em buscar informações atualizadas na web. "
-            "Analise os resultados de busca e apresente um resumo claro e objetivo. "
-            "Cite fontes quando relevante."
+            "Quando resultados de pesquisa forem fornecidos no contexto, USE-OS como fonte primária. "
+            "NUNCA diga que não tem acesso a dados em tempo real — os dados já estão no contexto. "
+            "Apresente um resumo claro e objetivo, citando fontes e incluindo links úteis."
         ),
         "palavras_chave": [
+            # Busca genérica
             "pesquisar", "buscar", "procurar", "encontrar", "notícias", "atualização",
             "novidade", "comparar", "alternativas", "melhor", "ranking", "tendência",
             "mercado", "preço", "custo", "ferramenta", "plataforma", "search",
+            # Clima e tempo real
+            "temperatura", "clima", "tempo em", "previsão", "chuva", "sol", "vento",
+            "calor", "frio", "umidade", "sensação térmica",
+            # Cotações e finanças
+            "cotação", "dólar", "euro", "bitcoin", "cripto", "câmbio", "bolsa",
+            "ações", "ibovespa", "nasdaq", "inflação", "selic",
+            # Documentação e referências
+            "documentação", "docs", "doc", "manual", "referência", "how to",
+            "tutorial", "guia", "sintaxe", "como usar", "como instalar", "como configurar",
+            # Notícias e eventos atuais
+            "hoje", "agora", "atual", "recente", "último", "nova versão", "release",
+            "resultado", "placar", "jogo", "campeonato", "eleição",
+            # Versão e lançamentos
+            "última versão", "versão atual", "versão do", "versão de", "qual versão",
+            "lançamento", "atualização do", "atualização de",
         ],
+        "usa_web": True,
         "nivel_preferido": 2,
     },
     "analista": {
@@ -169,9 +198,38 @@ EMBEDDING_MODEL = MODELOS["embedding"]
 COORDENADOR_MODELO = MODELOS["coordenador"]
 COORDENADOR_SYSTEM = (
     "Você é um coordenador. Sua ÚNICA tarefa é classificar a pergunta do usuário. "
-    "Responda APENAS com o nome do agente mais adequado: programador, pesquisador ou analista. "
+    "Responda APENAS com o nome do agente mais adequado: generalista, programador, pesquisador ou analista. "
     "Nada mais. Apenas o nome."
 )
+
+# ══════════════════════════════════════════════════════════════
+# SINAIS DE NECESSIDADE DE WEB / TEMPO REAL
+# ══════════════════════════════════════════════════════════════
+# Quando a pergunta contiver qualquer um desses termos, qualquer
+# agente vai disparar busca web e o cache será ignorado.
+
+SINAIS_WEB = [
+    # Clima
+    "temperatura", "clima em", "tempo em", "previsão do tempo", "vai chover",
+    "chuva em", "calor em", "frio em", "umidade",
+    # Cotações
+    "cotação", "preço do dólar", "preço do euro", "bitcoin hoje", "câmbio",
+    "bolsa hoje", "ibovespa", "nasdaq hoje", "selic hoje", "inflação hoje",
+    # Notícias e eventos
+    "notícia", "notícias de", "news", "resultado de", "placar", "quem ganhou",
+    "última hora", "nova versão de", "release de", "lançamento de",
+    # Documentação
+    "documentação do", "documentação de", "docs do", "docs de",
+    "como instalar", "como usar", "como configurar", "como integrar",
+    "tutorial de", "tutorial do", "guia de", "guia do",
+    "referência de", "referência do", "api do", "api de",
+    # Versão e lançamentos
+    "última versão", "versão atual", "versão do", "versão de", "qual versão",
+    "atualização do", "atualização de", "lançamento de", "lançamento do",
+    # Pesquisa explícita
+    "pesquise", "pesquisa sobre", "busque", "busca sobre", "procure",
+    "encontre", "me mostre", "quais são os", "qual o site",
+]
 
 # ══════════════════════════════════════════════════════════════
 # CLASSIFICADOR DE COMPLEXIDADE

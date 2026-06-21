@@ -2,7 +2,7 @@
 Ferramenta de pesquisa web via DuckDuckGo.
 """
 
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 
 
 def pesquisar_web(query: str, max_resultados: int = 5) -> str:
@@ -24,3 +24,27 @@ def pesquisar_web(query: str, max_resultados: int = 5) -> str:
 
     except Exception as e:
         return f"Erro na pesquisa: {str(e)}"
+
+
+def pesquisar_clima(cidade: str) -> str:
+    """Pesquisa clima/temperatura de uma cidade com query otimizada."""
+    query = f"temperatura clima agora {cidade} previsão do tempo hoje"
+    return pesquisar_web(query, max_resultados=3)
+
+
+def pesquisar_documentacao(tecnologia: str, versao: str = "") -> str:
+    """Pesquisa documentação oficial de uma tecnologia/biblioteca."""
+    versao_str = f" {versao}" if versao else ""
+    query = f"{tecnologia}{versao_str} documentation official docs site:docs.* OR site:*.dev OR site:*.io"
+    resultado = pesquisar_web(query, max_resultados=4)
+    if "Nenhum resultado" in resultado or "Erro" in resultado:
+        # Fallback sem restrição de domínio
+        query_fallback = f"{tecnologia}{versao_str} documentação oficial tutorial"
+        return pesquisar_web(query_fallback, max_resultados=4)
+    return resultado
+
+
+def pesquisar_cotacao(ativo: str) -> str:
+    """Pesquisa cotação de um ativo financeiro ou criptomoeda."""
+    query = f"cotação {ativo} hoje valor atual preço"
+    return pesquisar_web(query, max_resultados=3)

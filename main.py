@@ -8,6 +8,7 @@ Uso:
 """
 
 import sys
+import re
 from pathlib import Path
 
 from rich.console import Console
@@ -17,8 +18,60 @@ from rich.text import Text
 
 from src.core.config import AGENTES, MODELOS, NIVEIS, EMBEDDING_MODEL, PERFIL_ATIVO, PERFIS
 from src.core.llm import verificar_modelo_disponivel
-from src.agentes.coordenador import rotear
+from src.agentes.coordenador import rotear_com_validacao
 from src.agentes.executor import SistemaAgentes
+from src.core.utils import normalizar
+
+# Prefixos que indicam continuidade conversacional
+_PREFIXOS_FOLLOWUP = (
+    "e ", "mas ", "também ", "e em ", "e no ", "e na ",
+    "e de ", "e o ", "e a ", "e as ", "e os ",
+    "e quanto", "e qual", "e como", "e quando", "e onde",
+)
+
+# Padrão de localidade após preposição
+_RE_LOC = re.compile(
+    r"\b(em|no|na|nos|nas|de|do|da|dos|das|para)\s+([A-Za-zÀ-ú][A-Za-zÀ-ú ]{1,30}?)(?=[,?]|\s*$)",
+    re.IGNORECASE,
+)
+
+
+def _resolver_followup(entrada: str, sistema: "SistemaAgentes") -> str:
+    """
+    Se a entrada parece um follow-up (começa com conectivo ou é muito curta),
+    recupera a última pergunta do histórico e constrói uma query enriquecida.
+    Tenta substituir entidade de lugar quando possível.
+    Retorna a entrada original se não for follow-up.
+    """
+    entrada_norm = normalizar(entrada.strip())
+    num_tokens = len(entrada_norm.split())
+
+    eh_followup = any(entrada_norm.startswith(p) for p in _PREFIXOS_FOLLOWUP) or (
+        num_tokens <= 3 and any(c in entrada_norm for c in [" em ", " no ", " na ", " de ", " do ", " da "])
+    )
+
+    if not eh_followup:
+        return entrada
+
+    historico = sistema.memoria.ultimas_mensagens(4)
+    ultima_user = next(
+        (m["content"] for m in reversed(historico) if m["role"] == "user"),
+        None,
+    )
+    if not ultima_user:
+        return entrada
+
+    # Tenta substituir entidade de lugar: "e em Goiânia" → troca local na query original
+    nova_loc_m = _RE_LOC.search(entrada)
+    antiga_loc_m = _RE_LOC.search(ultima_user)
+    if nova_loc_m and antiga_loc_m:
+        nova_loc = re.sub(r"^e\s+", "", nova_loc_m.group(0).strip(), flags=re.IGNORECASE)
+        query_substituida = ultima_user.replace(antiga_loc_m.group(0).strip(), nova_loc.strip())
+        return query_substituida
+
+    # Fallback: concatena
+    return f"{ultima_user.rstrip('?.')} {entrada}"
+
 
 console = Console()
 
@@ -48,6 +101,7 @@ def verificar_dependencias():
 
     # Modelos LLM
     modelos_unicos = set(MODELOS.values())
+    modelos_unicos.discard(EMBEDDING_MODEL)
     for modelo in modelos_unicos:
         if verificar_modelo_disponivel(modelo):
             console.print(f"  ✅ {modelo}")
@@ -91,6 +145,7 @@ def processar_comando(comando: str, sistema: SistemaAgentes) -> bool | str:
         table.add_row("/contexto", "Ver histórico recente")
         table.add_row("/resumo", "Ver último resumo da conversa")
         table.add_row("/limpar", "Limpar histórico de mensagens")
+        table.add_row("/limparcache", "Limpar cache de respostas")
         table.add_row("/modelos", "Ver modelos configurados")
         table.add_row("/ajuda", "Esta lista")
         table.add_row("/sair", "Encerrar")
@@ -177,6 +232,10 @@ def processar_comando(comando: str, sistema: SistemaAgentes) -> bool | str:
         sistema.memoria.limpar_historico()
         console.print("[green]Histórico limpo.[/green]")
 
+    elif cmd == "/limparcache":
+        sistema.cache.limpar()
+        console.print("[green]Cache limpo.[/green]")
+
     elif cmd == "/agente":
         if len(partes) < 2:
             console.print("[yellow]Use: /agente <nome>[/yellow]")
@@ -232,16 +291,27 @@ def main():
                 continue
 
             # Pipeline
+            query_roteamento = entrada  # default: usa entrada sem enriquecimento
             if agente_forcado:
                 nome_agente = agente_forcado
                 agente_forcado = None
                 console.print(f"[dim]🎯 Forçado: {nome_agente}[/dim]")
             else:
-                nome_agente = rotear(entrada)
+                query_roteamento = _resolver_followup(entrada, sistema)
+                if query_roteamento != entrada:
+                    console.print(f"[dim]🔗 Contexto: {query_roteamento[:80]}[/dim]")
+
+                nome_agente, erro_roteamento = rotear_com_validacao(query_roteamento)
+                if erro_roteamento:
+                    console.print(f"[yellow]⚠️ {erro_roteamento}[/yellow]")
+                    continue
+                if not nome_agente:
+                    console.print("[yellow]⚠️ Não foi possível determinar o agente para esta solicitação.[/yellow]")
+                    continue
                 console.print(f"[dim]🎯 {nome_agente}[/dim]")
 
             console.print(f"[bold green]{nome_agente.capitalize()}:[/bold green] ", end="")
-            sistema.executar(nome_agente, entrada)
+            sistema.executar(nome_agente, query_roteamento)
 
     finally:
         sistema.fechar()
