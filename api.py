@@ -11,13 +11,13 @@ Endpoints:
 
 from __future__ import annotations
 
+import threading
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from src.agentes.coordenador import rotear
 from src.agentes.executor import SistemaAgentes
 
 
@@ -26,6 +26,7 @@ from src.agentes.executor import SistemaAgentes
 # ══════════════════════════════════════════════════════════════
 
 _sistema: SistemaAgentes | None = None
+_lock = threading.Lock()  # Thread-safety para estado compartilhado
 
 
 @asynccontextmanager
@@ -62,7 +63,6 @@ class PerguntaAgenteRequest(PerguntaRequest):
 class RespostaChat(BaseModel):
     resposta: str
     agente: str
-    nivel_usado: int | None = None
 
 
 # ══════════════════════════════════════════════════════════════
@@ -78,26 +78,27 @@ async def health():
 @app.post("/chat", response_model=RespostaChat)
 async def chat(req: PerguntaRequest):
     """Processa pergunta com roteamento automático."""
-    assert _sistema is not None
+    if not _sistema:
+        raise HTTPException(status_code=503, detail="Sistema não inicializado")
 
-    if req.nivel:
-        _sistema.forcar_nivel(req.nivel)
+    with _lock:
+        if req.nivel:
+            _sistema.forcar_nivel(req.nivel)
+        resposta = _sistema.executar("generalista", req.pergunta)
 
-    nome_agente = rotear(req.pergunta)
-    resposta = _sistema.executar(nome_agente, req.pergunta)
-
-    return RespostaChat(resposta=resposta, agente=nome_agente)
+    return RespostaChat(resposta=resposta, agente="generalista")
 
 
 @app.post("/chat/agente", response_model=RespostaChat)
 async def chat_com_agente(req: PerguntaAgenteRequest):
     """Processa pergunta com agente forçado."""
-    assert _sistema is not None
+    if not _sistema:
+        raise HTTPException(status_code=503, detail="Sistema não inicializado")
 
-    if req.nivel:
-        _sistema.forcar_nivel(req.nivel)
-
-    resposta = _sistema.executar(req.agente, req.pergunta)
+    with _lock:
+        if req.nivel:
+            _sistema.forcar_nivel(req.nivel)
+        resposta = _sistema.executar(req.agente, req.pergunta)
 
     return RespostaChat(resposta=resposta, agente=req.agente)
 
@@ -105,5 +106,6 @@ async def chat_com_agente(req: PerguntaAgenteRequest):
 @app.get("/stats")
 async def stats():
     """Métricas de performance."""
-    assert _sistema is not None
+    if not _sistema:
+        raise HTTPException(status_code=503, detail="Sistema não inicializado")
     return _sistema.estatisticas()

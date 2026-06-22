@@ -69,7 +69,7 @@ class SessaoCodigo:
     plano: list[StepPlano] = field(default_factory=list)
     step_atual: int = 0
     scratchpad: dict[str, str] = field(default_factory=dict)
-    snapshots: list[dict] = field(default_factory=list)  # [4] Rollback
+    snapshots: list[tuple[str, str]] = field(default_factory=list)  # [(arquivo, conteudo_anterior)]
     decisoes: list[str] = field(default_factory=list)
     erros: list[str] = field(default_factory=list)
     metricas_rag: dict = field(default_factory=dict)  # [11] A/B
@@ -94,13 +94,21 @@ class SessaoCodigo:
         return None
 
     def snapshot(self):
-        """[4] Salva snapshot antes de cada step para rollback."""
-        self.snapshots.append(dict(self.scratchpad))
+        """[4] Salva apenas o diff antes de modificar (copy-on-write leve)."""
+        # Guarda o estado do step pendente (o arquivo que vai ser criado/editado)
+        step = self.step_pendente()
+        if step and step.arquivo:
+            conteudo_atual = self.scratchpad.get(step.arquivo, "")
+            self.snapshots.append((step.arquivo, conteudo_atual))
 
     def rollback(self):
-        """[4] Reverte para o último snapshot."""
+        """[4] Reverte o último arquivo modificado."""
         if self.snapshots:
-            self.scratchpad = self.snapshots.pop()
+            arquivo, conteudo = self.snapshots.pop()
+            if conteudo:
+                self.scratchpad[arquivo] = conteudo
+            elif arquivo in self.scratchpad:
+                del self.scratchpad[arquivo]
 
     def contexto_para_step(self, step: StepPlano) -> str:
         """[3] Monta contexto com controle de tokens."""

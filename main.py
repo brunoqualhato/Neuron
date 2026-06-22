@@ -220,7 +220,10 @@ def processar_comando(comando: str, sistema: SistemaAgentes) -> bool | str:
             caminho = Path(partes[1].strip())
             if caminho.exists():
                 texto = caminho.read_text(encoding="utf-8")
-                chunks = [texto[i:i+500] for i in range(0, len(texto), 450)]
+                # Chunks de 500 chars com 10% overlap (step=450 era 90% — excessivo)
+                chunk_size = 500
+                step_size = chunk_size  # Sem overlap — cada chunk é independente
+                chunks = [texto[i:i+chunk_size] for i in range(0, len(texto), step_size)]
                 for chunk in chunks:
                     if chunk.strip():
                         sistema.ingerir_conhecimento(chunk, fonte=str(caminho))
@@ -388,6 +391,9 @@ def main():
 
     # ─── Modo batch ───
     if args.query:
+        # Desabilita Rich formatting em batch mode para output limpo
+        batch_console = Console(force_terminal=False, no_color=True) if not sys.stdout.isatty() else console
+
         sistema = SistemaAgentes()
         try:
             if args.nivel:
@@ -396,7 +402,7 @@ def main():
             if args.agente:
                 nome_agente = args.agente
             else:
-                nome_agente = "generalista"  # executor redireciona via analisador
+                nome_agente = "generalista"
 
             resposta = sistema.executar(nome_agente, args.query)
 
@@ -405,7 +411,6 @@ def main():
                     "agente": nome_agente,
                     "resposta": resposta,
                 }, ensure_ascii=False, indent=2))
-            # Em modo não-json a resposta já foi printada via streaming
         finally:
             sistema.fechar()
         return

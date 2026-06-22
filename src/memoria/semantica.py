@@ -18,18 +18,30 @@ from src.core.config import (
 
 class MemoriaSemantica:
     """
-    Memória vetorial com ChromaDB.
+    Memória vetorial com ChromaDB (Singleton).
     Armazena pares pergunta+resposta e busca por similaridade.
     Usa embeddings locais do Ollama (nomic-embed-text).
     """
 
+    _instancia: "MemoriaSemantica | None" = None
+
+    def __new__(cls):
+        """Singleton — reutiliza a mesma conexão ChromaDB."""
+        if cls._instancia is None:
+            cls._instancia = super().__new__(cls)
+            cls._instancia._inicializado = False
+        return cls._instancia
+
     def __init__(self):
+        if self._inicializado:
+            return
         self.client = chromadb.PersistentClient(path=CHROMADB_DIR)
         self.collection = self.client.get_or_create_collection(
             name=CHROMADB_COLLECTION,
             metadata={"hnsw:space": "cosine"},
         )
         self._embedding_disponivel = None
+        self._inicializado = True
 
     def _verificar_embedding(self) -> bool:
         """Verifica se o modelo de embedding está disponível."""

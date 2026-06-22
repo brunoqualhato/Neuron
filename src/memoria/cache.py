@@ -1,6 +1,7 @@
 """
-Camada 1 de memória: Cache exato (JSON).
+Camada 1 de memória: Cache exato (JSON) com LRU.
 Hash da pergunta → resposta instantânea.
+Eviction policy: máximo 500 entradas, remove as menos usadas.
 """
 
 import json
@@ -10,9 +11,11 @@ from datetime import datetime
 
 from src.core.config import CACHE_ARQUIVO, CACHE_HABILITADO
 
+CACHE_MAX_ENTRADAS = 500  # Limite para não crescer indefinidamente
+
 
 class Cache:
-    """Cache de respostas para evitar chamadas repetidas ao LLM."""
+    """Cache de respostas com LRU eviction para controlar RAM."""
 
     def __init__(self, arquivo: str = CACHE_ARQUIVO):
         self.arquivo = Path(arquivo)
@@ -32,24 +35,34 @@ class Cache:
             json.dumps(self.dados, ensure_ascii=False, indent=2), encoding="utf-8"
         )
 
+    def _evict_se_necessario(self):
+        """Remove entradas LRU se exceder tamanho máximo."""
+        if len(self.dados) <= CACHE_MAX_ENTRADAS:
+            return
+        # Ordena por ultimo_uso e remove as mais antigas
+        ordenado = sorted(
+            self.dados.items(),
+            key=lambda kv: kv[1].get("ultimo_uso", ""),
+        )
+        remover = len(self.dados) - CACHE_MAX_ENTRADAS
+        for chave, _ in ordenado[:remover]:
+            del self.dados[chave]
+
     @staticmethod
     def _hash(texto: str) -> str:
         return hashlib.sha256(texto.strip().lower().encode()).hexdigest()[:16]
 
     @staticmethod
     def _consulta_base(pergunta: str) -> str:
-        """Extrai a pergunta sem prefixo de agente quando existir."""
         if ":" in pergunta:
             return pergunta.split(":", 1)[1].strip().lower()
         return pergunta.strip().lower()
 
     @classmethod
     def _nao_cachear_consulta(cls, pergunta: str) -> bool:
-        """Evita cache para entradas genéricas que causam respostas fora de contexto."""
         base = cls._consulta_base(pergunta)
         if not base:
             return True
-
         tokens = base.split()
         if len(tokens) <= 2:
             genericas = {
@@ -58,7 +71,6 @@ class Cache:
             }
             if base in genericas:
                 return True
-
         return False
 
     def buscar(self, pergunta: str) -> str | None:
@@ -88,6 +100,7 @@ class Cache:
             "criado_em": datetime.now().isoformat(),
             "ultimo_uso": datetime.now().isoformat(),
         }
+        self._evict_se_necessario()
         self._salvar()
 
     def limpar(self):
@@ -97,4 +110,4 @@ class Cache:
     def estatisticas(self) -> dict:
         total = len(self.dados)
         hits_total = sum(e.get("hits", 0) for e in self.dados.values())
-        return {"entradas": total, "hits_total": hits_total}
+        return {"entradas": total, "max": CACHE_MAX_ENTRADAS, "hits_total": hits_total}
