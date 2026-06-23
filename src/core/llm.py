@@ -102,6 +102,14 @@ def chamar_llm(
                 if "prompt_eval_count" in chunk:
                     tokens_in = chunk["prompt_eval_count"]
 
+                # Detecção de degeneração: para se o modelo repetir o mesmo bloco.
+                # Evita desperdiçar tempo/recursos quando o modelo entra em loop,
+                # justamente o objetivo do tuning para hardware fraco.
+                if len(resposta_completa) > 300 and resposta_completa[-150:] == resposta_completa[-300:-150]:
+                    if on_token is None:
+                        console.print("\n[dim]⚠️ Repetição detectada, parando.[/dim]")
+                    break
+
             if on_token is None:
                 console.print()
         except Exception as e:

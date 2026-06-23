@@ -256,26 +256,16 @@ class SistemaAgentes:
             stream=True,
             max_tokens=512,
             temperatura=0.4,
+            num_ctx=NUM_CTX_NIVEL[2],
+            keep_alive=KEEP_ALIVE_PRINCIPAL,
         )
 
-        if nivel == 2:
-            contexto_busca = ""
-            if intencao.precisa_web:
-                console.print("[dim]🔍 Buscando na web (rápido)...[/dim]")
-                contexto_busca = pesquisar_web_rapida(pergunta, max_paginas=2)
-
-            mensagens = self._montar_contexto(2, contexto_busca, pergunta)
-
-            resultado = chamar_llm(
-                modelo=agente_cfg["modelo_rapido"],
-                system_prompt=agente_cfg["system_prompt"],
-                mensagens=mensagens,
-                stream=True,
-                max_tokens=512,
-                temperatura=0.4,
-                num_ctx=NUM_CTX_NIVEL[2],
-                keep_alive=KEEP_ALIVE_PRINCIPAL,
-            )
+        self._salvar_metrica(
+            nome_agente, 2, inicio,
+            tokens_in=resultado["tokens_entrada"],
+            tokens_out=resultado["tokens_saida"],
+            fonte="llm_rapido",
+        )
 
         if self._deve_promover_para_profundo(pergunta, resultado["resposta"]):
             # Self-correction: tenta corrigir no mesmo modelo antes de promover
