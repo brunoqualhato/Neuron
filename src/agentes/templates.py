@@ -377,8 +377,8 @@ TEMPLATES: list[TemplateProjeto] = [
         esqueletos={
             "requirements.txt": "flask>=3.0\n",
             "app.py": (
-                "from flask import Flask, render_template, request, jsonify, redirect, url_for\n"
-                "from models import *  # Importar modelos do projeto\n\n"
+                "from flask import Flask, render_template, request, jsonify\n"
+                "import models  # Importar modelos do projeto\n\n"
                 "app = Flask(__name__)\n\n"
                 "# Inicializar dados/storage\n\n"
                 "@app.route('/')\n"
