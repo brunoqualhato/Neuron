@@ -154,14 +154,37 @@ class SessaoCodigo:
         if eh_ponto_entrada and self.scratchpad:
             modulos_existentes = [
                 f for f in self.scratchpad.keys()
-                if f != step.arquivo and not f.endswith((".md", ".txt", ".json"))
+                if f != step.arquivo and not f.endswith((".md", ".txt", ".json", ".css"))
             ]
             if modulos_existentes:
+                # Extrai assinaturas dos módulos para o LLM saber o que importar
+                assinaturas = []
+                for mod in modulos_existentes:
+                    codigo_mod = self.scratchpad[mod]
+                    sigs = _truncar_inteligente(codigo_mod, 500)
+                    assinaturas.append(f"  {mod}: {sigs[:200]}")
+
                 partes.append(
-                    f"MÓDULOS DISPONÍVEIS PARA IMPORTAR: {', '.join(modulos_existentes)}\n"
-                    f"IMPORTANTE: Este é o PONTO DE ENTRADA. Deve importar e usar os módulos acima "
-                    f"para criar uma interface interativa (CLI com menu ou servidor web)."
+                    f"MÓDULOS DO PROJETO (DEVE importar e usar):\n"
+                    + "\n".join(assinaturas) + "\n\n"
+                    f"IMPORTANTE — INTEGRAÇÃO OBRIGATÓRIA:\n"
+                    f"- Este é o PONTO DE ENTRADA. DEVE importar classes/funções dos módulos acima.\n"
+                    f"- Se existe models.py E storage.py: o ponto de entrada deve conectá-los.\n"
+                    f"  Ex: Storage recebe/usa o Manager, ou o Manager usa Storage para persistir.\n"
+                    f"- NÃO crie instâncias isoladas que não se comunicam.\n"
+                    f"- O fluxo de dados deve ser: Entrada do Usuário → Manager/Model → Storage → Disco"
                 )
+
+        # Se é módulo de persistência, lembra de importar models
+        eh_storage = step.arquivo and any(
+            x in step.arquivo.lower() for x in ("storage", "persist", "database", "db", "repo")
+        )
+        if eh_storage and "models" in " ".join(self.scratchpad.keys()):
+            partes.append(
+                "ATENÇÃO: Este módulo de persistência DEVE importar as classes de models.py.\n"
+                "Use 'from models import ...' para referenciar os tipos de dados.\n"
+                "NÃO recrie classes que já existem em models.py."
+            )
 
         # Reforça stack se definida nas decisões
         stack_decisao = next(
@@ -173,6 +196,20 @@ class SessaoCodigo:
         partes.append(f"STEP ({step.numero}/{len(self.plano)}): {step.descricao}")
         if step.arquivo:
             partes.append(f"GERE: {step.arquivo}")
+
+            # Reforça o formato esperado para evitar confusão de conteúdo
+            formato_hints = {
+                ".txt": "FORMATO: Texto simples. Se for requirements.txt: um pacote por linha (ex: flask>=3.0). NÃO coloque HTML aqui.",
+                ".css": "FORMATO: Apenas regras CSS válidas (seletores { propriedade: valor; }). NÃO coloque Python ou HTML aqui.",
+                ".html": "FORMATO: HTML válido. Pode usar Jinja2 ({{ }}, {% %}) se for template Flask. NÃO coloque Python puro aqui.",
+                ".js": "FORMATO: JavaScript válido. NÃO coloque Python aqui.",
+                ".json": "FORMATO: JSON válido. NÃO coloque código aqui.",
+                ".md": "FORMATO: Markdown com instruções reais de instalação e execução do projeto.",
+            }
+            for ext, hint in formato_hints.items():
+                if step.arquivo.endswith(ext):
+                    partes.append(hint)
+                    break
 
         return "\n\n".join(partes)
 
@@ -472,18 +509,30 @@ def editar_arquivo(sessao: SessaoCodigo, arquivo: str, instrucao: str) -> str:
 
 _PROMPT_COT_1 = """Analise o projeto solicitado e liste as funcionalidades necessárias para: {objetivo}
 
+PRIMEIRO, IDENTIFIQUE O TIPO DE ENTREGA:
+- Se o objetivo menciona "site", "web", "página", "dashboard", "painel", "formulário" → É um SITE WEB (Flask + HTML)
+- Se o objetivo menciona "api", "rest", "endpoint", "backend" → É uma API (FastAPI/Express)
+- Se o objetivo menciona "cli", "terminal", "menu" → É uma CLI
+- Se não especificado E envolve CRUD de dados → padrão = SITE WEB com Flask
+- Se não especificado E é utilitário/cálculo → padrão = CLI
+
 REGRAS OBRIGATÓRIAS:
-- O projeto DEVE ter um ponto de entrada executável (main.py, index.js, app.py, etc.)
-- O projeto DEVE ter interface interativa: CLI com menu/readline, ou servidor web com endpoints testáveis, ou GUI
-- O projeto DEVE funcionar ao rodar (python main.py, node index.js, etc.) sem configuração extra
-- Inclua: arquivo de configuração/dependências (requirements.txt, package.json), README com instruções de uso
-- Se for CLI: use menus interativos, prompts de input, feedback visual
-- Se for web: inclua ao menos uma rota funcional testável com curl ou navegador
-- ESCOLHA UMA ÚNICA LINGUAGEM/STACK e use apenas ela em todo o projeto. Não misture Python e JavaScript.
-- Se não especificado, use Python com CLI interativa
+- O projeto DEVE ter um ponto de entrada executável
+- Para SITE WEB: use Flask com templates HTML, formulários, rotas CRUD, CSS básico
+- Para CLI: use menus interativos com input(), feedback visual
+- Para API: use FastAPI/Express com endpoints RESTful
+- Inclua: arquivo de dependências (requirements.txt/package.json), README com instruções
+- TODOS os módulos devem se INTEGRAR: models → storage → ponto de entrada (conectados)
+- NÃO crie módulos paralelos desconectados
+- ESCOLHA UMA ÚNICA LINGUAGEM/STACK e use apenas ela em todo o projeto
+
+IMPORTANTE SOBRE PERSISTÊNCIA:
+- Se o projeto armazena dados: o módulo de storage DEVE importar os models
+- O ponto de entrada DEVE usar storage para salvar/carregar dados
+- Não crie Manager em memória E Storage separado sem conexão entre eles
 
 Responda como bullet points. Máximo 10 itens. Seja específico e técnico.
-O PRIMEIRO item deve ser sempre o ponto de entrada principal com interface interativa.
+O PRIMEIRO item deve ser sempre o ponto de entrada principal com a interface adequada ao tipo.
 O ÚLTIMO item deve ser o README.md com instruções de execução."""
 
 _PROMPT_COT_2 = """Com base nestas funcionalidades:
@@ -522,21 +571,54 @@ _PROMPT_CODER = """Você é um programador expert que cria projetos FUNCIONAIS e
 
 REGRAS OBRIGATÓRIAS:
 1. Gere APENAS o código do arquivo pedido — completo e funcional
-2. Inclua TODOS os imports necessários no topo
+2. Inclua TODOS os imports necessários no topo, incluindo imports de OUTROS MÓDULOS DO PROJETO
+   - Se o step indica dependências (models.py, storage.py, etc.), DEVE importar deles
+   - Exemplo: "from models import Contato, ContatoManager" se models.py define essas classes
 3. Se for o ponto de entrada (main.py, index.js, app.py): DEVE ter interface interativa
    - Para CLI: use loop com menu de opções, input() do usuário, feedback visual
-   - Para web: servidor que suba e responda em localhost
-4. Se for módulo: exporte classes/funções que o ponto de entrada vai importar
-5. Se for requirements.txt/package.json: liste APENAS dependências realmente usadas
-6. Se for README.md: inclua instruções EXATAS de como instalar e executar
-7. Código deve funcionar ao ser executado — sem TODOs, sem stubs, sem "implementar depois"
-8. Use a stack definida pelo usuário. Se não definida, use Python com CLI interativa
-9. NÃO inclua explicações fora do código — apenas comentários inline quando necessário
-10. O projeto deve ser VIVO: o usuário roda e interage imediatamente"""
+   - Para web/site: servidor Flask/Express com rotas, templates HTML, CRUD funcional
+4. Se for módulo auxiliar (storage, services): DEVE importar os modelos do projeto
+   - Exemplo: storage.py que usa Contato DEVE ter "from models import Contato"
+5. INTEGRAÇÃO ENTRE MÓDULOS É OBRIGATÓRIA:
+   - O ponto de entrada DEVE usar os módulos de negócio (models) E de persistência (storage) juntos
+   - O storage DEVE salvar/carregar os dados do manager — ambos devem operar sobre a MESMA lista
+   - NÃO crie dois sistemas paralelos desconectados (ex: Manager em memória + Storage separado)
+   - O fluxo correto: ponto de entrada → usa manager → manager usa storage internamente
+6. Se for requirements.txt/package.json: liste APENAS dependências realmente usadas no código
+7. Se for README.md: inclua instruções EXATAS de como instalar e executar
+8. Código deve funcionar ao ser executado — sem TODOs, sem stubs, sem "implementar depois"
+9. Use a stack definida nas DECISÕES do projeto. Se não definida, use Python com CLI interativa
+10. O projeto deve ser VIVO: o usuário roda e interage imediatamente
+11. Trate inputs opcionais corretamente: string vazia ("") significa "manter valor atual", não substituir
+12. NÃO inclua explicações fora do código — apenas comentários inline quando necessário
+
+FORMATO DO CONTEÚDO POR TIPO DE ARQUIVO (CRÍTICO — NÃO MISTURE):
+- requirements.txt → APENAS nomes de pacotes, um por linha. Ex: flask>=3.0
+- package.json → APENAS JSON válido com dependências
+- *.py → APENAS código Python válido
+- *.js → APENAS código JavaScript válido
+- *.html → APENAS HTML válido (pode incluir Jinja2 se for template Flask)
+- *.css → APENAS regras CSS válidas (seletores, propriedades, valores)
+- README.md → APENAS Markdown com instruções de uso
+
+NUNCA coloque HTML dentro de um .txt, NUNCA coloque Python dentro de um .css, NUNCA coloque CSS dentro de um .py."""
 
 _PROMPT_VALIDAR = """Avalie se o código atende ao objetivo e é EXECUTÁVEL.
-Critérios: código completo (sem TODOs/stubs), imports corretos, interface funcional (se for ponto de entrada).
-Responda JSON: {"valido":true/false,"problemas":[],"decisoes":[]}"""
+
+Critérios (todos devem ser verdadeiros):
+1. Código completo (sem TODOs/stubs/pass vazio)
+2. Imports corretos — inclui imports de outros módulos do PROJETO (não só stdlib)
+3. Interface funcional — se for ponto de entrada: CLI com menu OU servidor web com rotas
+4. Integração — se usa dados de outros módulos, deve importar E usar as classes/funções deles
+5. Consistência — se é storage/persistência, deve importar os modelos do projeto (ex: from models import ...)
+6. requirements.txt/package.json — lista APENAS o que é realmente importado no código
+
+Responda JSON: {"valido":true/false,"problemas":[],"decisoes":[]}
+
+Exemplos de problemas comuns:
+- "storage.py usa Contato mas não importa de models" → inválido
+- "main.py cria Manager e Storage mas não os conecta" → inválido
+- "requirements.txt lista Flask mas nenhum arquivo usa Flask" → inválido"""
 
 _PROMPT_RETRY = """PROBLEMAS ENCONTRADOS:
 {problemas}
@@ -699,6 +781,17 @@ def _executar_step_com_validacao(
         validacao = _validar_step(sessao, step, codigo)
 
         if validacao["valido"]:
+            # [14] Validação de integração entre módulos (heurística rápida)
+            problemas_integracao = _validar_integracao(sessao, step, codigo)
+            if problemas_integracao and tentativa <= MAX_RETRIES:
+                console.print(f"  [yellow]⚠️ Integração: {'; '.join(problemas_integracao[:2])}[/yellow]")
+                codigo = _retry_step(sessao, step, codigo, problemas_integracao)
+                if step.arquivo.endswith(".py"):
+                    v, _ = _validar_sintaxe(codigo, step.arquivo)
+                    if not v:
+                        continue
+                # Aceita após retry de integração (não re-verifica para não entrar em loop)
+
             sessao.registrar_resultado(step, codigo)
 
             for d in validacao.get("decisoes", []):
@@ -940,6 +1033,132 @@ def _validar_step(sessao: SessaoCodigo, step: StepPlano, codigo: str) -> dict:
         return _parse_validacao(r["message"]["content"].strip())
     except Exception:
         return {"valido": True, "problemas": [], "decisoes": []}
+
+
+def _validar_integracao(sessao: SessaoCodigo, step: StepPlano, codigo: str) -> list[str]:
+    """
+    Validação heurística de integração entre módulos.
+    Verifica se o código atual referencia corretamente os módulos já gerados.
+    Retorna lista de problemas (vazia = OK).
+    """
+    problemas = []
+    if not step.arquivo:
+        return problemas
+
+    arquivo = step.arquivo
+    codigo_lower = codigo.lower()
+
+    # ─── Regra 0: Validação de TIPO DE CONTEÚDO ───
+    # Detecta quando o LLM gerou conteúdo errado para o tipo de arquivo
+    if arquivo.endswith(".txt") or arquivo == "requirements.txt":
+        if "<!DOCTYPE" in codigo or "<html" in codigo or "<head" in codigo:
+            problemas.append(
+                f"O arquivo {arquivo} contém HTML mas deveria conter apenas texto/dependências. "
+                f"Para requirements.txt: liste apenas pacotes Python, um por linha (ex: flask>=3.0)"
+            )
+        if "def " in codigo or "import " in codigo or "class " in codigo:
+            if not any(pkg in codigo for pkg in ("flask", "sqlalchemy", "requests")):
+                problemas.append(
+                    f"O arquivo {arquivo} parece conter código Python mas deveria ser apenas lista de pacotes"
+                )
+
+    if arquivo.endswith(".css"):
+        if "from flask" in codigo or "import " in codigo or "def " in codigo:
+            problemas.append(
+                f"O arquivo {arquivo} contém código Python mas deveria conter apenas CSS. "
+                f"Gere regras CSS: seletores {{ propriedade: valor; }}"
+            )
+        if "<!DOCTYPE" in codigo or "<html" in codigo:
+            problemas.append(
+                f"O arquivo {arquivo} contém HTML mas deveria conter apenas CSS"
+            )
+
+    if arquivo.endswith(".html"):
+        if codigo.strip().startswith(("from ", "import ", "#!/")):
+            problemas.append(
+                f"O arquivo {arquivo} começa com código Python mas deveria ser HTML. "
+                f"Gere HTML com tags: <!DOCTYPE html><html>..."
+            )
+
+    if arquivo.endswith(".js") and not arquivo.endswith(".json"):
+        if "from flask" in codigo or "import flask" in codigo_lower:
+            problemas.append(
+                f"O arquivo {arquivo} contém imports Python mas deveria ser JavaScript"
+            )
+
+    # Se já encontrou problemas de tipo, retorna imediatamente (não faz sentido checar integração)
+    if problemas:
+        return problemas
+
+    # ─── Regra 1: Storage/persistência deve importar models ───
+    eh_storage = any(
+        x in arquivo.lower() for x in ("storage", "persist", "database", "db", "repo")
+    )
+    if eh_storage:
+        # Verifica se models.py existe e se storage importa dele
+        modelos_existentes = [
+            f for f in sessao.scratchpad.keys()
+            if "model" in f.lower() and f.endswith(".py")
+        ]
+        if modelos_existentes:
+            # Extrai classes definidas em models
+            for mod_file in modelos_existentes:
+                mod_code = sessao.scratchpad[mod_file]
+                classes = re.findall(r"class\s+(\w+)", mod_code)
+                # Verifica se storage usa alguma classe sem importar
+                for cls in classes:
+                    if cls in codigo and f"from {mod_file.replace('.py', '')} import" not in codigo:
+                        if f"import {mod_file.replace('.py', '')}" not in codigo:
+                            problemas.append(
+                                f"Usa '{cls}' mas não importa de {mod_file}. "
+                                f"Adicione: from {mod_file.replace('.py', '')} import {cls}"
+                            )
+
+    # ─── Regra 2: Ponto de entrada deve usar storage E models ───
+    eh_ponto_entrada = arquivo.split(".")[0] in ("main", "index", "app", "server", "cli")
+    if eh_ponto_entrada:
+        tem_storage = any("storage" in f.lower() for f in sessao.scratchpad.keys())
+        tem_models = any("model" in f.lower() for f in sessao.scratchpad.keys())
+
+        if tem_storage and "storage" not in codigo_lower and "import" in codigo_lower:
+            problemas.append(
+                "Ponto de entrada não usa o módulo storage — dados não serão persistidos. "
+                "Importe e use Storage para salvar/carregar dados."
+            )
+
+        if tem_models and tem_storage:
+            # Verifica se ambos são instanciados mas não conectados
+            tem_import_storage = "storage" in codigo_lower
+            tem_import_models = any(
+                f"from {f.replace('.py', '')}" in codigo or f"import {f.replace('.py', '')}" in codigo
+                for f in sessao.scratchpad.keys() if "model" in f.lower()
+            )
+            if tem_import_storage and tem_import_models:
+                # Ambos importados — verifica se estão conectados (heurística básica)
+                # Se cria instâncias separadas sem passar uma para outra, é suspeito
+                pass  # Aceita — a verificação completa exigiria análise AST profunda
+
+    # ─── Regra 3: requirements.txt deve ter apenas o que é usado ───
+    if arquivo == "requirements.txt":
+        deps_listadas = [
+            line.split("==")[0].split(">=")[0].split("<=")[0].strip().lower()
+            for line in codigo.split("\n")
+            if line.strip() and not line.startswith("#")
+        ]
+        # Verifica se cada dep é usada em algum arquivo do projeto
+        for dep in deps_listadas:
+            dep_import = dep.replace("-", "_")  # flask-cors → flask_cors
+            usado = any(
+                dep_import in src_code.lower() or dep in src_code.lower()
+                for f, src_code in sessao.scratchpad.items()
+                if f.endswith((".py", ".js", ".ts")) and f != arquivo
+            )
+            if not usado:
+                problemas.append(
+                    f"requirements.txt lista '{dep}' mas nenhum arquivo do projeto importa essa biblioteca"
+                )
+
+    return problemas
 
 
 # ══════════════════════════════════════════════════════════════
