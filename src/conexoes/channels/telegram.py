@@ -10,6 +10,7 @@ import urllib.request
 
 from src.conexoes.bus import InboundMessage, MessageBus, OutboundMessage, SenderInfo
 from src.conexoes.channels.base import BaseChannel
+from src.conexoes.channels.formato import markdown_para_telegram_html
 from src.conexoes.channels.registry import registrar
 
 logger = logging.getLogger(__name__)
@@ -73,10 +74,30 @@ class TelegramChannel(BaseChannel):
             chat_id=str(msg.get("chat", {}).get("id", "")),
         )
 
+    @staticmethod
+    def _erro_de_parse(resp: dict) -> bool:
+        """True quando o Telegram rejeitou as entidades HTML (markdown quebrado
+        do modelo). Nesse caso vale reenviar como texto puro, em vez de levantar."""
+        desc = str(resp.get("description", "")).lower()
+        return "parse entities" in desc or "unsupported start tag" in desc
+
     async def send(self, msg: OutboundMessage) -> None:
+        # Converte Markdown -> HTML para o texto chegar formatado no chat.
+        html = markdown_para_telegram_html(msg.texto)
         resp = await asyncio.to_thread(
-            self._api_call, "sendMessage", {"chat_id": msg.chat_id, "text": msg.texto}
+            self._api_call,
+            "sendMessage",
+            {"chat_id": msg.chat_id, "text": html, "parse_mode": "HTML"},
         )
+        if not resp.get("ok", False) and self._erro_de_parse(resp):
+            # HTML malformado: reenvia o texto original cru (sem formatacao).
+            logger.warning(
+                "Telegram rejeitou o HTML (%s); reenviando como texto puro.",
+                resp.get("description"),
+            )
+            resp = await asyncio.to_thread(
+                self._api_call, "sendMessage", {"chat_id": msg.chat_id, "text": msg.texto}
+            )
         if not resp.get("ok", False):
             # Levanta para o ChannelManager aplicar retry/backoff.
             raise RuntimeError(

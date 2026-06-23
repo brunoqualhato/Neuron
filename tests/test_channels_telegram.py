@@ -49,6 +49,64 @@ def test_send_chama_sendmessage():
     assert params["text"] == "oi"
 
 
+def test_send_usa_parse_mode_html_e_converte_markdown():
+    """O texto vai convertido para HTML com parse_mode=HTML (formatacao no chat)."""
+    async def cenario():
+        canal = TelegramChannel(MessageBus(), token="t")
+        with patch.object(canal, "_api_call", return_value={"ok": True}) as mock_api:
+            await canal.send(
+                OutboundMessage(texto="isto e **forte**", canal="telegram", chat_id="1")
+            )
+        return mock_api
+
+    mock_api = asyncio.run(cenario())
+    _, params = mock_api.call_args[0]
+    assert params["parse_mode"] == "HTML"
+    assert params["text"] == "isto e <b>forte</b>"
+
+
+def test_send_fallback_texto_puro_quando_html_falha():
+    """Se o Telegram rejeitar as entidades HTML, reenvia o texto original cru."""
+    async def cenario():
+        canal = TelegramChannel(MessageBus(), token="t")
+        respostas = [
+            {"ok": False, "error_code": 400,
+             "description": "Bad Request: can't parse entities: ..."},
+            {"ok": True},
+        ]
+        with patch.object(canal, "_api_call", side_effect=respostas) as mock_api:
+            await canal.send(
+                OutboundMessage(texto="ola mundo", canal="telegram", chat_id="1")
+            )
+        return mock_api
+
+    mock_api = asyncio.run(cenario())
+    assert mock_api.call_count == 2
+    _, params2 = mock_api.call_args_list[1][0]
+    assert params2["text"] == "ola mundo"
+    assert "parse_mode" not in params2
+
+
+def test_send_nao_faz_fallback_em_erro_que_nao_e_de_parse():
+    """Erro logico comum (chat not found) levanta direto, sem reenviar."""
+    async def cenario():
+        canal = TelegramChannel(MessageBus(), token="t")
+        with patch.object(
+            canal, "_api_call",
+            return_value={"ok": False, "description": "chat not found"},
+        ) as mock_api:
+            try:
+                await canal.send(
+                    OutboundMessage(texto="oi", canal="telegram", chat_id="999")
+                )
+            except RuntimeError:
+                pass
+        return mock_api
+
+    mock_api = asyncio.run(cenario())
+    assert mock_api.call_count == 1  # nao tentou fallback
+
+
 def test_api_call_trata_http_error_retornando_json():
     """HTTPError (401/4xx) nao deve estourar: retorna o JSON de erro do Telegram."""
     corpo = b'{"ok":false,"error_code":401,"description":"Unauthorized"}'
