@@ -16,7 +16,10 @@ class Memoria:
     """Memória persistente com SQLite."""
 
     def __init__(self, arquivo: str = MEMORIA_ARQUIVO):
-        self.conn = sqlite3.connect(arquivo)
+        # check_same_thread=False: o servidor (runtime) processa via asyncio.to_thread,
+        # entao a conexao e usada por threads diferentes do pool. O acesso e serializado
+        # pelo runtime (uma mensagem por vez), entao nao ha concorrencia real. WAL ajuda.
+        self.conn = sqlite3.connect(arquivo, check_same_thread=False)
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA synchronous=NORMAL")
         self._criar_tabelas()

@@ -2,11 +2,17 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable
 
 from src.conexoes.bus import InboundMessage, MessageBus, OutboundMessage
 
+logger = logging.getLogger(__name__)
+
 Processador = Callable[[str, str], str]
+
+# Resposta enviada ao usuario quando o processamento falha (em vez de cair calado).
+ERRO_PROCESSAMENTO = "Ops, tive um problema ao processar isso. Pode tentar de novo?"
 
 
 def _processador_padrao() -> Processador:
@@ -49,6 +55,10 @@ class Runtime:
             typing_task = asyncio.create_task(self._loop_typing(msg.canal, msg.chat_id))
         try:
             resposta = await asyncio.to_thread(self._processar, self.agente_padrao, msg.texto)
+        except Exception:
+            # Uma mensagem que falha NUNCA pode derrubar o agente: loga e responde erro.
+            logger.exception("Erro ao processar mensagem (canal=%s chat=%s)", msg.canal, msg.chat_id)
+            resposta = ERRO_PROCESSAMENTO
         finally:
             if typing_task is not None:
                 typing_task.cancel()
@@ -59,4 +69,8 @@ class Runtime:
     async def rodar(self) -> None:
         while True:
             msg = await self._bus.proxima_entrada()
-            await self.processar_uma(msg)
+            try:
+                await self.processar_uma(msg)
+            except Exception:
+                # Defesa em profundidade: o loop do servidor nunca para por uma mensagem.
+                logger.exception("Erro no loop do runtime (mensagem ignorada)")

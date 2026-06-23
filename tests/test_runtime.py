@@ -57,3 +57,30 @@ def test_runtime_sinaliza_typing_enquanto_processa():
 
     chamadas = asyncio.run(cenario())
     assert ("telegram", "c1") in chamadas
+
+
+def test_runtime_nao_morre_quando_processar_falha():
+    """Uma mensagem que estoura nao pode derrubar o agente: responde erro e segue."""
+    from src.conexoes.runtime import ERRO_PROCESSAMENTO
+
+    async def cenario():
+        bus = MessageBus()
+        recebidas = []
+
+        async def coletor(m: OutboundMessage):
+            recebidas.append(m)
+
+        bus.assinar_saida(coletor)
+
+        def processar(agente, texto):
+            raise RuntimeError("boom")
+
+        rt = Runtime(bus, processar)
+        out = await rt.processar_uma(
+            InboundMessage(texto="x", sender=SenderInfo(id="u"), canal="cli", chat_id="c")
+        )
+        return out, recebidas
+
+    out, recebidas = asyncio.run(cenario())
+    assert out.texto == ERRO_PROCESSAMENTO
+    assert len(recebidas) == 1
