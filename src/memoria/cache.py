@@ -75,6 +75,13 @@ class Cache:
         base = cls._consulta_base(pergunta)
         if not base:
             return True
+        termos_temporais = {
+            "hoje", "agora", "atual", "atuais", "recente", "recentes",
+            "último", "ultima", "última", "latest", "cotação", "preço",
+            "clima", "temperatura", "placar", "resultado",
+        }
+        if any(termo in base for termo in termos_temporais):
+            return True
         tokens = base.split()
         if len(tokens) <= 2:
             genericas = {

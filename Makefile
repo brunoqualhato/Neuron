@@ -16,7 +16,7 @@ run:
 	python main.py
 
 api:
-	pip install fastapi uvicorn && uvicorn api:app --host 0.0.0.0 --port 8000
+	pip install -r requirements-api.txt && uvicorn api:app --host 0.0.0.0 --port 8000
 
 docker:
-	docker build -t potato-claw . && docker run --rm -it potato-claw
+	docker build -t potato-claw . && docker run --rm -p 8000:8000 potato-claw
