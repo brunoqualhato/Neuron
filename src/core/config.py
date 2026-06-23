@@ -79,6 +79,17 @@ PERFIS = {
         "completo": "qwen3:4b",                           # 3.2 GB
         "embedding": "nomic-embed-text",                   # 270 MB
     },
+
+    # ─── GEMMA: melhor em português, recomendado para uso conversacional ───
+    # gemma2:2b (~1.6 GB) supera os Qwen pequenos em pt-BR, segue a identidade
+    # (diz o próprio nome) e usa bem o contexto da conversa. Pico baixo (~1.6 GB).
+    "gemma": {
+        "coordenador": "gemma2:2b",                       # 1.6 GB - roteamento
+        "rapido": "gemma2:2b",                            # 1.6 GB - nível 2
+        "coder": "gemma2:2b",                             # 1.6 GB - código
+        "completo": "gemma2:2b",                          # 1.6 GB - nível 3
+        "embedding": "nomic-embed-text",                   # 270 MB
+    },
 }
 
 # Modelos ativos (baseado no perfil selecionado)

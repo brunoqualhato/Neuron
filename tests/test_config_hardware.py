@@ -32,3 +32,12 @@ def test_perfil_sugerido_maximo(monkeypatch):
 def test_perfil_sugerido_none_quando_ram_desconhecida(monkeypatch):
     monkeypatch.setattr(config, "RAM_GB", 0.0)
     assert config.perfil_sugerido_por_ram() is None
+
+
+def test_perfil_gemma_existe_e_usa_gemma2():
+    assert "gemma" in config.PERFIS
+    perfil = config.PERFIS["gemma"]
+    assert perfil["coordenador"] == "gemma2:2b"
+    assert perfil["rapido"] == "gemma2:2b"
+    assert perfil["completo"] == "gemma2:2b"
+    assert perfil["embedding"] == "nomic-embed-text"
