@@ -9,67 +9,42 @@ semanticamente a pergunta e decide:
   - Parâmetros extraídos (local, expressão, etc)
 
 Uma única chamada de ~100ms substitui toda a lógica de keyword matching.
+
+Otimizações para modelos pequenos (1.2B):
+  - format="json" garante output estruturado sem desperdício de tokens
+  - Prompt compacto (~300 tokens) libera espaço para contexto
+  - Few-shot dinâmico via ChromaDB quando disponível
 """
 
 from __future__ import annotations
 
 import json
+import logging
 
 import ollama
 
 from src.core.config import COORDENADOR_MODELO
 
+logger = logging.getLogger(__name__)
+
 
 # ══════════════════════════════════════════════════════════════
-# PROMPT DO ANALISADOR
+# PROMPT DO ANALISADOR (compacto para modelos 1.2B)
 # ══════════════════════════════════════════════════════════════
 
-_PROMPT_ANALISAR = """Você é um classificador de intenções. Analise a pergunta e retorne APENAS um JSON válido.
+_PROMPT_ANALISAR = """Classifique a intenção do usuário em JSON com estes campos:
+- "agente": generalista|programador|pesquisador|analista
+- "precisa_web": true se precisa de dados atuais (clima, cotação, versões, notícias, docs)
+- "ferramenta": null|calculo|data_hora|saudacao|arquivo|comando
+- "parametros": dados extraídos ({} se vazio)
 
-Campos obrigatórios:
-- "agente": um de [generalista, programador, pesquisador, analista]
-- "precisa_web": true/false (precisa de dados atuais da internet?)
-- "ferramenta": null ou um de [calculo, data_hora, saudacao, arquivo, comando]
-- "parametros": objeto com dados extraídos (pode ser vazio {})
-
-Regras para "precisa_web":
-- true se a resposta CORRETA depende de informações que mudam com o tempo (clima, cotação, notícias, versões atuais, eventos)
-- true se pede dados de um local/país específico que não é conhecimento geral
-- true se pede documentação, tutorial ou referência de tecnologia
-- false se é conhecimento geral estável (o que é python, como funciona recursão)
-- false se pode ser resolvido com ferramenta local
-
-Regras para "ferramenta":
-- "calculo" se é expressão matemática. parametros: {"expressao": "..."}
-- "data_hora" se pergunta hora/data/dia. parametros: {"local": "nome_do_local"} ou {} se local
-- "saudacao" se é apenas oi/hello/bom dia. parametros: {}
-- "arquivo" se pede ler/criar/listar arquivo. parametros: {"acao": "ler|criar|listar", "caminho": "..."}
-- "comando" se pede executar algo. parametros: {"comando": "..."}
-- null se nenhuma ferramenta se aplica (precisa de LLM)
-
-Exemplos:
-Pergunta: "que horas são no Congo"
-{"agente":"generalista","precisa_web":false,"ferramenta":"data_hora","parametros":{"local":"congo"}}
-
-Pergunta: "como está o tempo em São Paulo"
-{"agente":"pesquisador","precisa_web":true,"ferramenta":null,"parametros":{}}
-
-Pergunta: "quanto é 15% de 300"
-{"agente":"generalista","precisa_web":false,"ferramenta":"calculo","parametros":{"expressao":"300*0.15"}}
-
-Pergunta: "crie uma API rest em python com autenticação JWT"
-{"agente":"programador","precisa_web":false,"ferramenta":null,"parametros":{}}
-
-Pergunta: "qual a última versão do node.js"
-{"agente":"pesquisador","precisa_web":true,"ferramenta":null,"parametros":{}}
-
-Pergunta: "analise a viabilidade de um SaaS de voip"
-{"agente":"analista","precisa_web":false,"ferramenta":null,"parametros":{}}
-
-Pergunta: "oi"
-{"agente":"generalista","precisa_web":false,"ferramenta":"saudacao","parametros":{}}
-
-Responda APENAS o JSON, sem explicação."""
+Regras:
+- calculo: parametros.expressao com a expressão matemática
+- data_hora: parametros.local se pede hora de um lugar
+- arquivo: parametros.acao (ler|criar|listar) + parametros.caminho
+- comando: parametros.comando
+- saudacao: para oi/hello/bom dia
+- precisa_web=false se é conhecimento estável ou ferramenta local resolve"""
 
 
 # ══════════════════════════════════════════════════════════════
@@ -103,6 +78,53 @@ class IntencaoAnalisada:
 
 
 # ══════════════════════════════════════════════════════════════
+# FEW-SHOT DINÂMICO
+# ══════════════════════════════════════════════════════════════
+
+def _obter_exemplos_dinamicos(pergunta: str) -> str:
+    """
+    Busca exemplos de classificação anteriores similares no ChromaDB.
+    Retorna string com 2-3 exemplos ou string vazia.
+    """
+    try:
+        from src.memoria.semantica import MemoriaSemantica
+        sem = MemoriaSemantica()
+        docs = sem.buscar_similar(f"intencao:{pergunta}", top_k=3)
+        exemplos = []
+        for doc in docs:
+            meta = doc.get("metadata", {})
+            if meta.get("tipo") == "intencao_classificada":
+                exemplos.append(doc["conteudo"])
+        if exemplos:
+            return "\nExemplos similares:\n" + "\n".join(exemplos[:3])
+    except Exception:
+        pass
+    return ""
+
+
+def salvar_intencao_classificada(pergunta: str, intencao: "IntencaoAnalisada"):
+    """
+    Salva uma classificação bem-sucedida para uso futuro como few-shot.
+    Chamado pelo executor após confirmar que a classificação funcionou.
+    """
+    try:
+        from src.memoria.semantica import MemoriaSemantica
+        sem = MemoriaSemantica()
+        doc = (
+            f'Pergunta: "{pergunta}"\n'
+            f'{{"agente":"{intencao.agente}","precisa_web":{str(intencao.precisa_web).lower()},'
+            f'"ferramenta":{json.dumps(intencao.ferramenta)},"parametros":{json.dumps(intencao.parametros)}}}'
+        )
+        sem.adicionar_conhecimento(
+            texto=doc,
+            fonte="analisador",
+            tipo="intencao_classificada",
+        )
+    except Exception as e:
+        logger.debug("Erro ao salvar intenção classificada: %s", e)
+
+
+# ══════════════════════════════════════════════════════════════
 # ANALISADOR
 # ══════════════════════════════════════════════════════════════
 
@@ -115,32 +137,50 @@ def analisar_intencao(pergunta: str, modelo: str = COORDENADOR_MODELO) -> Intenc
     Usa a LLM coordenadora para analisar semanticamente a pergunta.
     Retorna IntencaoAnalisada com agente, web, ferramenta e parâmetros.
 
-    Performance: ~80-150ms com modelo 1.2B, 20 tokens de saída.
+    Otimizações:
+      - format="json" → garante output JSON válido direto do Ollama
+      - Few-shot dinâmico → exemplos relevantes do ChromaDB
+      - Prompt compacto → ~300 tokens liberando espaço para contexto
     """
     try:
+        # Few-shot dinâmico (se disponível)
+        exemplos = _obter_exemplos_dinamicos(pergunta)
+        prompt_completo = _PROMPT_ANALISAR + exemplos
+
         response = ollama.chat(
             model=modelo,
             messages=[
-                {"role": "system", "content": _PROMPT_ANALISAR},
+                {"role": "system", "content": prompt_completo},
                 {"role": "user", "content": pergunta},
             ],
+            format="json",
             options={
                 "temperature": 0.05,
-                "num_predict": 120,
+                "num_predict": 100,
             },
         )
         raw = response["message"]["content"].strip()
         return _parse_resposta(raw)
 
-    except Exception:
+    except Exception as e:
+        logger.debug("Analisador falhou: %s", e)
         # Fallback conservador: manda pro generalista com web
         return IntencaoAnalisada(agente="generalista", precisa_web=True)
 
 
 def _parse_resposta(raw: str) -> IntencaoAnalisada:
     """Parseia o JSON da LLM com tolerância a erros."""
-    # Tenta extrair JSON balanceado (suporta 1 nível de aninhamento)
-    # Procura a primeira { e encontra a } que fecha balanceadamente
+    # Com format="json", o output já deve ser JSON válido
+    # Mas mantém parser robusto como fallback
+
+    # Tenta parse direto primeiro
+    try:
+        data = json.loads(raw)
+        return _validar_campos(data, raw)
+    except json.JSONDecodeError:
+        pass
+
+    # Fallback: extrai JSON balanceado
     inicio = raw.find("{")
     if inicio == -1:
         return IntencaoAnalisada(raw=raw)
@@ -163,10 +203,13 @@ def _parse_resposta(raw: str) -> IntencaoAnalisada:
 
     try:
         data = json.loads(json_str)
+        return _validar_campos(data, raw)
     except json.JSONDecodeError:
         return IntencaoAnalisada(raw=raw)
 
-    # Valida campos
+
+def _validar_campos(data: dict, raw: str) -> IntencaoAnalisada:
+    """Valida e normaliza campos do JSON parseado."""
     agente = data.get("agente", "generalista")
     if agente not in _AGENTES_VALIDOS:
         agente = "generalista"

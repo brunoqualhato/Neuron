@@ -32,6 +32,7 @@ from rich.panel import Panel
 
 from src.core.config import MODELOS, DATA_DIR
 from src.memoria.semantica import MemoriaSemantica
+from src.agentes.templates import selecionar_template, obter_esqueleto
 
 console = Console()
 
@@ -742,12 +743,21 @@ def _executar_step_com_validacao(
 def _executar_step_streaming(sessao: SessaoCodigo, step: StepPlano) -> str:
     """Gera código com streaming visual (o usuário vê o código aparecendo)."""
     contexto = sessao.contexto_para_step(step)
+
+    # Injeta esqueleto do template se disponível
+    esqueleto_extra = ""
+    template = selecionar_template(sessao.objetivo)
+    if template and step.arquivo:
+        esqueleto = obter_esqueleto(template, step.arquivo)
+        if esqueleto:
+            esqueleto_extra = f"\n\nESQUELETO BASE (expanda e complete):\n```\n{esqueleto}\n```"
+
     try:
         stream = ollama.chat(
             model=MODELOS["coder"],
             messages=[
                 {"role": "system", "content": _PROMPT_CODER},
-                {"role": "user", "content": contexto},
+                {"role": "user", "content": contexto + esqueleto_extra},
             ],
             options={"temperature": 0.3, "num_predict": 4096},
             stream=True,
@@ -793,10 +803,29 @@ def _pedir_feedback() -> str:
 def _planejar_cot(objetivo: str) -> SessaoCodigo:
     """
     Planejamento em 2 passes:
-      1. Lista funcionalidades necessárias
-      2. Organiza em arquivos/steps
+      1. Tenta selecionar template pré-definido (instantâneo)
+      2. Se não há template adequado: LLM lista funcionalidades + organiza em steps
     Resultado melhor que um prompt único em modelos 1.2B.
     """
+    # Tenta template primeiro (zero custo, melhor resultado com modelos pequenos)
+    template = selecionar_template(objetivo)
+    if template:
+        console.print(f"[dim]  📐 Template: {template.nome} ({template.stack})[/dim]")
+        from src.agentes.sessao_codigo import StepPlano
+        steps = [
+            StepPlano(
+                numero=i,
+                descricao=s.descricao,
+                arquivo=s.arquivo,
+                dependencias=s.dependencias,
+            )
+            for i, s in enumerate(template.gerar_plano(), 1)
+        ]
+        sessao = SessaoCodigo(objetivo=objetivo, plano=steps)
+        sessao.decisoes.append(f"Template: {template.nome}, Stack: {template.stack}")
+        return sessao
+
+    # Sem template — usa LLM com chain-of-thought
     try:
         # Passo 1: listar funcionalidades
         r1 = ollama.chat(
@@ -815,6 +844,7 @@ def _planejar_cot(objetivo: str) -> SessaoCodigo:
             messages=[
                 {"role": "user", "content": _PROMPT_COT_2.format(funcionalidades=funcionalidades)},
             ],
+            format="json",
             options={"temperature": 0.2, "num_predict": 500},
         )
         raw = r2["message"]["content"].strip()
@@ -834,6 +864,7 @@ def _planejar_simples(objetivo: str) -> SessaoCodigo:
                 {"role": "system", "content": _PROMPT_PLANEJAR_SIMPLES},
                 {"role": "user", "content": objetivo},
             ],
+            format="json",
             options={"temperature": 0.2, "num_predict": 500},
         )
         return _parse_plano(objetivo, response["message"]["content"].strip())

@@ -54,6 +54,14 @@ def chamar_llm(
                 if "prompt_eval_count" in chunk:
                     tokens_in = chunk["prompt_eval_count"]
 
+                # Detecção de degeneração: para se repetir bloco
+                if len(resposta_completa) > 300:
+                    ultimos = resposta_completa[-150:]
+                    penultimos = resposta_completa[-300:-150]
+                    if ultimos == penultimos:
+                        console.print("\n[dim]⚠️ Repetição detectada, parando.[/dim]")
+                        break
+
             console.print()
         except Exception as e:
             resposta_completa = f"Erro ao chamar modelo {modelo}: {str(e)}"
@@ -155,3 +163,26 @@ def verificar_modelo_disponivel(modelo: str) -> bool:
         return alvo in nomes or f"{alvo}:latest" in nomes or alvo_base in nomes_base
     except Exception:
         return False
+
+
+def warmup_modelos(modelos: dict[str, str], keep_alive: str = "10m"):
+    """
+    Pré-carrega modelos na RAM do Ollama ao iniciar.
+    Evita latência de ~2-3s na primeira chamada.
+
+    Args:
+        modelos: dict de perfil MODELOS (rapido, completo, etc.)
+        keep_alive: tempo para manter na RAM (padrão 10min)
+    """
+    modelos_unicos = set(modelos.values())
+    for modelo in modelos_unicos:
+        try:
+            ollama.chat(
+                model=modelo,
+                messages=[{"role": "user", "content": "oi"}],
+                options={"num_predict": 1},
+                keep_alive=keep_alive,
+            )
+            console.print(f"  [dim]🔥 {modelo} carregado[/dim]")
+        except Exception:
+            pass

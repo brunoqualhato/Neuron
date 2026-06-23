@@ -5,6 +5,13 @@ Pipeline por nível:
   Nível 1: Ferramentas → Cache → ChromaDB → RETORNA (sem LLM!)
   Nível 2: ...nivel1... → Modelo Rápido (1.7B) + contexto mínimo
   Nível 3: ...nivel1... → ChromaDB RAG → Modelo Completo (4B) + contexto rico
+
+Otimizações para modelos pequenos:
+  - Self-correction loop antes de promover nível
+  - Few-shot dinâmico salva classificações bem-sucedidas
+  - Prompts compactos por nível
+  - Detecção de degeneração no streaming
+  - Feedback do usuário salvo como preferência
 """
 
 import logging
@@ -22,7 +29,7 @@ from src.core.config import (
 )
 from src.core.classificador import classificar_complexidade, explicar_nivel
 from src.core.llm import chamar_llm, resumir_conversa, verificar_modelo_disponivel
-from src.core.analisador import analisar_intencao, IntencaoAnalisada
+from src.core.analisador import analisar_intencao, salvar_intencao_classificada, IntencaoAnalisada
 from src.memoria.cache import Cache
 from src.memoria.sqlite import Memoria
 from src.memoria.semantica import MemoriaSemantica
@@ -231,6 +238,7 @@ class SistemaAgentes:
     ) -> str | None:
         """
         Executa com modelo rápido. Retorna resposta ou None se deve promover.
+        Inclui self-correction loop antes de promover para nível 3.
         """
         contexto_busca = ""
         if intencao.precisa_web:
@@ -248,7 +256,6 @@ class SistemaAgentes:
             temperatura=0.4,
         )
 
-        self._salvar(pergunta, resultado["resposta"], nome_agente, nivel=2, inicio=inicio)
         self._salvar_metrica(
             nome_agente, 2, inicio,
             tokens_in=resultado["tokens_entrada"],
@@ -257,11 +264,50 @@ class SistemaAgentes:
         )
 
         if self._deve_promover_para_profundo(pergunta, resultado["resposta"]):
+            # Self-correction: tenta corrigir no mesmo modelo antes de promover
+            corrigida = self._autocorrecao_rapida(
+                pergunta, resultado["resposta"], agente_cfg["modelo_rapido"]
+            )
+            if corrigida and not self._deve_promover_para_profundo(pergunta, corrigida):
+                console.print("[dim]🔄 Autocorreção bem-sucedida[/dim]")
+                self._salvar(pergunta, corrigida, nome_agente, nivel=2, inicio=inicio)
+                resposta_final = agente_obj.pos_execucao(pergunta, corrigida)
+                # Salva classificação como bem-sucedida
+                salvar_intencao_classificada(pergunta, intencao)
+                return resposta_final
+
             console.print("[dim]↑ Ajuste de precisão: promovido para Nível 3[/dim]")
             return None  # Sinaliza promoção
 
+        self._salvar(pergunta, resultado["resposta"], nome_agente, nivel=2, inicio=inicio)
         resposta_final = agente_obj.pos_execucao(pergunta, resultado["resposta"])
+        # Salva classificação como bem-sucedida
+        salvar_intencao_classificada(pergunta, intencao)
         return resposta_final
+
+    def _autocorrecao_rapida(self, pergunta: str, resposta_fraca: str, modelo: str) -> str | None:
+        """
+        Self-correction loop: tenta corrigir resposta fraca no mesmo modelo.
+        Custo: ~80-150ms com modelo 1.2B. Evita promoção desnecessária ao nível 3.
+        """
+        try:
+            import ollama
+            response = ollama.chat(
+                model=modelo,
+                messages=[
+                    {"role": "system", "content": "Sua resposta anterior foi vaga ou incompleta. Responda novamente de forma precisa e direta."},
+                    {"role": "user", "content": pergunta},
+                    {"role": "assistant", "content": resposta_fraca},
+                    {"role": "user", "content": "Responda melhor, com dados concretos. Seja específico."},
+                ],
+                options={"temperature": 0.3, "num_predict": 512},
+            )
+            corrigida = response["message"]["content"].strip()
+            if corrigida and len(corrigida) > len(resposta_fraca) * 0.5:
+                return corrigida
+        except Exception as e:
+            logger.debug("Autocorreção falhou: %s", e)
+        return None
 
     # ══════════════════════════════════════════════════════════════
     # PIPELINE NÍVEL 3: PROFUNDO (modelo grande + RAG)
@@ -310,11 +356,15 @@ class SistemaAgentes:
             fonte="llm_profundo",
         )
 
+        resposta_final = agente_obj.pos_execucao(pergunta, resultado["resposta"])
+
         # Resumo automático a cada 10 mensagens
         if self.memoria.total_mensagens() % 10 == 0:
             self._gerar_resumo(agente_cfg["modelo_rapido"])
 
-        resposta_final = agente_obj.pos_execucao(pergunta, resultado["resposta"])
+        # Salva classificação como bem-sucedida para few-shot futuro
+        salvar_intencao_classificada(pergunta, intencao)
+
         return resposta_final
 
     def _obter_contextos_nivel3(
@@ -593,6 +643,15 @@ class SistemaAgentes:
         """Adiciona conhecimento à base vetorial."""
         self.semantica.adicionar_conhecimento(texto, fonte)
         console.print(f"[green]📚 Conhecimento adicionado ({len(texto)} chars)[/green]")
+
+    def salvar_feedback(self, pergunta: str, feedback: str):
+        """
+        Salva feedback/correção do usuário como preferência permanente.
+        Permite que o sistema aprenda padrões do usuário real.
+        """
+        doc = f"PREFERÊNCIA: Quando peço '{pergunta}', quero '{feedback}'"
+        self.semantica.adicionar_conhecimento(doc, fonte="feedback_usuario", tipo="preferencia")
+        console.print("[dim]📝 Preferência salva[/dim]")
 
     def fechar(self):
         self.memoria.fechar()
