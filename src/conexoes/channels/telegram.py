@@ -83,6 +83,15 @@ class TelegramChannel(BaseChannel):
                 f"Telegram sendMessage falhou: {resp.get('description', resp)}"
             )
 
+    async def enviar_typing(self, chat_id: str) -> None:
+        """Mostra 'digitando...' no chat (capability). Expira em ~5s no Telegram."""
+        try:
+            await asyncio.to_thread(
+                self._api_call, "sendChatAction", {"chat_id": chat_id, "action": "typing"}
+            )
+        except Exception:
+            pass  # indicador de UX nao deve derrubar o fluxo
+
     async def start(self) -> None:
         self._rodando = True
         while self._rodando:

@@ -31,7 +31,7 @@ def montar_servidor(
         canal = canais_registry.criar(cfg["tipo"], bus, cfg)
         mgr.adicionar(canal)
         canais.append(canal)
-    rt = Runtime(bus, processar)
+    rt = Runtime(bus, processar, manager=mgr)
     return mgr, rt, canais
 
 

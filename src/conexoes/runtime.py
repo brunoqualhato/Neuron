@@ -22,13 +22,36 @@ def _processador_padrao() -> Processador:
 
 
 class Runtime:
-    def __init__(self, bus: MessageBus, processar: Processador | None = None) -> None:
+    def __init__(
+        self,
+        bus: MessageBus,
+        processar: Processador | None = None,
+        manager=None,
+    ) -> None:
         self._bus = bus
         self._processar = processar or _processador_padrao()
+        self._manager = manager
         self.agente_padrao = "generalista"
+        self.typing_intervalo_s = 4.0
+
+    async def _loop_typing(self, canal: str, chat_id: str) -> None:
+        """Mantem 'digitando...' ativo enquanto o LLM processa (reenvia periodicamente)."""
+        try:
+            while True:
+                await self._manager.sinalizar_typing(canal, chat_id)
+                await asyncio.sleep(self.typing_intervalo_s)
+        except asyncio.CancelledError:
+            pass
 
     async def processar_uma(self, msg: InboundMessage) -> OutboundMessage:
-        resposta = await asyncio.to_thread(self._processar, self.agente_padrao, msg.texto)
+        typing_task = None
+        if self._manager is not None:
+            typing_task = asyncio.create_task(self._loop_typing(msg.canal, msg.chat_id))
+        try:
+            resposta = await asyncio.to_thread(self._processar, self.agente_padrao, msg.texto)
+        finally:
+            if typing_task is not None:
+                typing_task.cancel()
         out = OutboundMessage(texto=resposta, canal=msg.canal, chat_id=msg.chat_id)
         await self._bus.publicar_saida(out)
         return out
