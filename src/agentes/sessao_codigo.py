@@ -82,6 +82,7 @@ class SessaoCodigo:
     inicio: float = field(default_factory=time.time)
     tempo_total_ms: int = 0
     interativo: bool = False  # [2] Feedback mid-session
+    projeto_validado: bool | None = None
 
     @property
     def progresso(self) -> str:
@@ -91,7 +92,11 @@ class SessaoCodigo:
 
     @property
     def concluida(self) -> bool:
-        return all(s.concluido or s.pulado for s in self.plano)
+        return (
+            bool(self.plano)
+            and all(s.concluido or s.pulado for s in self.plano)
+            and self.projeto_validado is not False
+        )
 
     def step_pendente(self) -> Optional[StepPlano]:
         for step in self.plano:
@@ -169,14 +174,15 @@ class SessaoCodigo:
                     assinaturas.append(f"  {mod}: {sigs[:200]}")
 
                 partes.append(
-                    f"MÓDULOS DO PROJETO (DEVE importar e usar):\n"
-                    + "\n".join(assinaturas) + "\n\n"
-                    f"IMPORTANTE — INTEGRAÇÃO OBRIGATÓRIA:\n"
-                    f"- Este é o PONTO DE ENTRADA. DEVE importar classes/funções dos módulos acima.\n"
-                    f"- Se existe models.py E storage.py: o ponto de entrada deve conectá-los.\n"
-                    f"  Ex: Storage recebe/usa o Manager, ou o Manager usa Storage para persistir.\n"
-                    f"- NÃO crie instâncias isoladas que não se comunicam.\n"
-                    f"- O fluxo de dados deve ser: Entrada do Usuário → Manager/Model → Storage → Disco"
+                    "MÓDULOS DO PROJETO (DEVE importar e usar):\n"
+                    + "\n".join(assinaturas)
+                    + "\n\n"
+                    + "IMPORTANTE — INTEGRAÇÃO OBRIGATÓRIA:\n"
+                    + "- Este é o PONTO DE ENTRADA. DEVE importar classes/funções dos módulos acima.\n"
+                    + "- Se existe models.py E storage.py: o ponto de entrada deve conectá-los.\n"
+                    + "  Ex: Storage recebe/usa o Manager, ou o Manager usa Storage para persistir.\n"
+                    + "- NÃO crie instâncias isoladas que não se comunicam.\n"
+                    + "- O fluxo de dados deve ser: Entrada do Usuário → Manager/Model → Storage → Disco"
                 )
 
         # Se é módulo de persistência, lembra de importar models
@@ -203,9 +209,18 @@ class SessaoCodigo:
 
             # Reforça o formato esperado para evitar confusão de conteúdo
             formato_hints = {
-                ".txt": "FORMATO: Texto simples. Se for requirements.txt: um pacote por linha (ex: flask>=3.0). NÃO coloque HTML aqui.",
-                ".css": "FORMATO: Apenas regras CSS válidas (seletores { propriedade: valor; }). NÃO coloque Python ou HTML aqui.",
-                ".html": "FORMATO: HTML válido. Pode usar Jinja2 ({{ }}, {% %}) se for template Flask. NÃO coloque Python puro aqui.",
+                ".txt": (
+                    "FORMATO: Texto simples. Se for requirements.txt: um pacote por linha "
+                    "(ex: flask>=3.0). NÃO coloque HTML aqui."
+                ),
+                ".css": (
+                    "FORMATO: Apenas regras CSS válidas (seletores { propriedade: valor; }). "
+                    "NÃO coloque Python ou HTML aqui."
+                ),
+                ".html": (
+                    "FORMATO: HTML válido. Pode usar Jinja2 ({{ }}, {% %}) se for template Flask. "
+                    "NÃO coloque Python puro aqui."
+                ),
                 ".js": "FORMATO: JavaScript válido. NÃO coloque Python aqui.",
                 ".json": "FORMATO: JSON válido. NÃO coloque código aqui.",
                 ".md": "FORMATO: Markdown com instruções reais de instalação e execução do projeto.",
@@ -313,6 +328,7 @@ def _criar_scaffold_offline(objetivo: str) -> SessaoCodigo:
     sessao = SessaoCodigo(
         objetivo=objetivo,
         decisoes=[f"Stack: {template.stack}", "Modo offline: scaffold baseado em template"],
+        projeto_validado=False,
     )
     for numero, template_step in enumerate(template.gerar_plano(), 1):
         step = StepPlano(
@@ -366,6 +382,7 @@ def _persistir_sessao(sessao: SessaoCodigo):
         "decisoes": sessao.decisoes,
         "erros": sessao.erros,
         "tempo_total_ms": sessao.tempo_total_ms,
+        "projeto_validado": sessao.projeto_validado,
         "plano": [
             {"numero": s.numero, "descricao": s.descricao, "arquivo": s.arquivo,
              "dependencias": s.dependencias, "concluido": s.concluido, "pulado": s.pulado}
@@ -387,6 +404,7 @@ def _restaurar_sessao() -> Optional[SessaoCodigo]:
             scratchpad=dados.get("scratchpad", {}),
             decisoes=dados.get("decisoes", []),
             erros=dados.get("erros", []),
+            projeto_validado=dados.get("projeto_validado"),
         )
         for s in dados.get("plano", []):
             sessao.plano.append(StepPlano(
@@ -717,6 +735,7 @@ def executar_projeto(
         sessao.tempo_total_ms = int((time.time() - inicio_total) * 1000)
         problemas = _validar_projeto_gerado(sessao)
         sessao.erros.extend(problemas)
+        sessao.projeto_validado = False
         if salvar_disco and sessao.scratchpad:
             caminho = _exportar_disco(sessao, diretorio_saida)
             console.print(f"[bold green]📁 Scaffold salvo em: {caminho}[/bold green]")
@@ -788,17 +807,23 @@ def executar_projeto(
     sessao.tempo_total_ms = int((time.time() - inicio_total) * 1000)
     problemas_projeto = _validar_projeto_gerado(sessao)
     if problemas_projeto:
+        sessao.projeto_validado = False
         sessao.erros.extend(f"Validação final: {p}" for p in problemas_projeto)
         console.print(
             f"[yellow]⚠️ Validação final encontrou {len(problemas_projeto)} problema(s).[/yellow]"
         )
     else:
+        sessao.projeto_validado = True
         console.print("[green]🧪 Smoke checks do projeto passaram.[/green]")
     _salvar_projeto_completo(semantica, sessao)
 
-    if salvar_disco and sessao.scratchpad:
+    if salvar_disco and sessao.scratchpad and sessao.projeto_validado:
         caminho = _exportar_disco(sessao, diretorio_saida)
         console.print(f"\n[bold green]📁 Salvo em: {caminho}[/bold green]")
+    elif salvar_disco and sessao.scratchpad:
+        console.print(
+            "[yellow]📁 Exportação bloqueada: corrija os problemas da validação final.[/yellow]"
+        )
 
     # [8] Limpa persistência se concluiu
     if sessao.concluida:
@@ -1289,6 +1314,7 @@ def _exportar_disco(sessao: SessaoCodigo, diretorio: str | None = None) -> Path:
         "erros": sessao.erros,
         "tempo_ms": sessao.tempo_total_ms,
         "metricas_rag": sessao.metricas_rag,
+        "projeto_validado": sessao.projeto_validado,
     }
     (base / "_meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     return base
@@ -1356,6 +1382,19 @@ def _validar_projeto_gerado(sessao: SessaoCodigo) -> list[str]:
                         f"{(proc.stderr or proc.stdout).strip()[:300]}"
                     )
 
+    return problemas
+
+
+def _atualizar_validacao_final(sessao: SessaoCodigo) -> list[str]:
+    """Atualiza o estado de conclusão a partir dos smoke checks locais."""
+    problemas = _validar_projeto_gerado(sessao)
+    sessao.projeto_validado = not problemas
+    if problemas:
+        existentes = set(sessao.erros)
+        for problema in problemas:
+            mensagem = f"Validação final: {problema}"
+            if mensagem not in existentes:
+                sessao.erros.append(mensagem)
     return problemas
 
 
@@ -1525,6 +1564,8 @@ def avancar_sessao() -> tuple[Optional[StepPlano], str]:
     sem = MemoriaSemantica()
     _sessao_ativa.snapshot()
     sucesso = _executar_step_com_validacao(_sessao_ativa, step, sem)
+    if sucesso and _sessao_ativa.step_pendente() is None:
+        _atualizar_validacao_final(_sessao_ativa)
     _persistir_sessao(_sessao_ativa)
     if sucesso:
         return step, step.resultado
@@ -1554,6 +1595,8 @@ def rerun_step(numero: int) -> tuple[Optional[StepPlano], str]:
             _sessao_ativa.snapshot()
             sem = MemoriaSemantica()
             sucesso = _executar_step_com_validacao(_sessao_ativa, step, sem)
+            if sucesso and _sessao_ativa.step_pendente() is None:
+                _atualizar_validacao_final(_sessao_ativa)
             _persistir_sessao(_sessao_ativa)
             if sucesso:
                 return step, step.resultado

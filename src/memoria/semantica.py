@@ -59,6 +59,7 @@ class MemoriaSemantica:
         }
         # Compatibilidade com integrações existentes: conversa é a coleção padrão.
         self.collection = self.collections["conversa"]
+        self._migrar_tipos_legados()
         self._embedding_disponivel = None
         self._inicializado = True
 
@@ -78,6 +79,29 @@ class MemoriaSemantica:
             logger.debug("Modelo de embedding '%s' indisponível: %s", EMBEDDING_MODEL, e)
             self._embedding_disponivel = False
         return self._embedding_disponivel
+
+    def _migrar_tipos_legados(self):
+        """Move documentos tipados que versões antigas gravavam na coleção padrão."""
+        try:
+            total = self.collection.count()
+            if total == 0:
+                return
+            dados = self.collection.get(include=["documents", "metadatas", "embeddings"])
+            for indice, doc_id in enumerate(dados["ids"]):
+                metadata = (dados.get("metadatas") or [])[indice] or {}
+                tipo = metadata.get("tipo", "conversa")
+                destino = self.collections.get(tipo)
+                if tipo == "conversa" or destino is None or destino.name == self.collection.name:
+                    continue
+                destino.upsert(
+                    ids=[doc_id],
+                    documents=[dados["documents"][indice]],
+                    embeddings=[dados["embeddings"][indice]],
+                    metadatas=[metadata],
+                )
+                self.collection.delete(ids=[doc_id])
+        except Exception as e:
+            logger.debug("Migração de memória legada ignorada: %s", e)
 
     def _gerar_embedding(self, texto: str) -> list[float]:
         """Gera embedding usando Ollama."""

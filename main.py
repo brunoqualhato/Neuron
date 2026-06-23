@@ -330,7 +330,8 @@ def processar_comando(comando: str, sistema: SistemaAgentes) -> bool | str:
             sistema.memoria.salvar_mensagem("user", f"/projeto {objetivo}")
             sistema.memoria.salvar_mensagem(
                 "assistant",
-                f"Projeto concluído: {sessao.progresso} steps, "
+                f"Projeto {'concluído' if sessao.concluida else 'gerado com pendências'}: "
+                f"{sessao.progresso} steps, "
                 f"{len(sessao.scratchpad)} arquivos gerados em {sessao.tempo_total_ms/1000:.1f}s",
                 "programador",
                 3,

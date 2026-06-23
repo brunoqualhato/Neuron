@@ -78,7 +78,9 @@ class Cache:
         termos_temporais = {
             "hoje", "agora", "atual", "atuais", "recente", "recentes",
             "último", "ultima", "última", "latest", "cotação", "preço",
-            "clima", "temperatura", "placar", "resultado",
+            "clima", "temperatura", "placar", "resultado", "versão", "versao",
+            "release", "lançamento", "lancamento", "notícia", "noticia",
+            "dólar", "dolar", "euro", "bitcoin", "câmbio", "cambio",
         }
         if any(termo in base for termo in termos_temporais):
             return True

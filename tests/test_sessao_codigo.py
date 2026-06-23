@@ -60,7 +60,8 @@ class TestValidarProjetoGerado:
     def test_scaffold_offline_usa_template(self):
         sessao = _criar_scaffold_offline("CLI Python para gerenciar tarefas")
 
-        assert sessao.concluida
+        assert sessao.concluida is False
+        assert sessao.projeto_validado is False
         assert "main.py" in sessao.scratchpad
         assert _validar_projeto_gerado(sessao) == []
 

@@ -208,10 +208,13 @@ A resposta inclui `agente`, `nivel` e `fonte` realmente usados pelo pipeline.
 
 ```bash
 docker build -t potato-claw .
-docker run --rm -p 8000:8000 potato-claw
+docker run --rm -p 8000:8000 \
+  --add-host host.docker.internal:host-gateway \
+  -e OLLAMA_HOST=http://host.docker.internal:11434 \
+  potato-claw
 ```
 
-O container inicia a API HTTP na porta `8000`.
+O container inicia a API HTTP na porta `8000` e conecta ao Ollama executado no host.
 
 ## Segurança de ações locais
 
