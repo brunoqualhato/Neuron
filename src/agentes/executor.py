@@ -20,29 +20,35 @@ import time
 from rich.console import Console
 from rich.panel import Panel
 
+from src.agentes.base import Agente, ConfigAgente, criar_agente
+from src.core.analisador import IntencaoAnalisada, analisar_intencao, salvar_intencao_classificada
+from src.core.classificador import classificar_complexidade, explicar_nivel
 from src.core.config import (
     AGENTES,
-    NIVEIS,
     CHROMADB_NIVEL1_THRESHOLD,
+    KEEP_ALIVE_PRINCIPAL,
+    NUM_CTX_NIVEL,
     RAG_MAX_CHARS,
     RAG_MAX_DOCS,
-    NUM_CTX_NIVEL,
-    KEEP_ALIVE_PRINCIPAL,
 )
-from src.core.classificador import classificar_complexidade, explicar_nivel
+from src.core.contexto import montar_system_prompt
 from src.core.llm import chamar_llm, resumir_conversa, verificar_modelo_disponivel
-from src.core.analisador import analisar_intencao, salvar_intencao_classificada, IntencaoAnalisada
-from src.memoria.cache import Cache
-from src.memoria.sqlite import Memoria
-from src.memoria.semantica import MemoriaSemantica
 from src.ferramentas.resolver import (
-    executar_ferramentas, obter_data_hora, calcular,
-    verificar_ferramenta_saudacao, _extrair_local_hora,
-    listar_pasta, ler_arquivo, criar_arquivo, executar_comando_local,
+    _extrair_local_hora,
+    calcular,
+    criar_arquivo,
+    executar_comando_local,
+    executar_ferramentas,
+    ler_arquivo,
+    listar_pasta,
+    obter_data_hora,
+    verificar_ferramenta_saudacao,
 )
-from src.ferramentas.web_rag import pesquisar_web_profunda, pesquisar_web_rapida
 from src.ferramentas.web_async import paralelo_sync
-from src.agentes.base import Agente, ConfigAgente, criar_agente
+from src.ferramentas.web_rag import pesquisar_web_profunda, pesquisar_web_rapida
+from src.memoria.cache import Cache
+from src.memoria.semantica import MemoriaSemantica
+from src.memoria.sqlite import Memoria
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -251,7 +257,7 @@ class SistemaAgentes:
 
         resultado = chamar_llm(
             modelo=agente_cfg["modelo_rapido"],
-            system_prompt=agente_cfg["system_prompt"],
+            system_prompt=montar_system_prompt(agente_cfg["system_prompt"]),
             mensagens=mensagens,
             stream=True,
             max_tokens=512,
@@ -343,8 +349,10 @@ class SistemaAgentes:
 
         resultado = chamar_llm(
             modelo=modelo_profundo,
-            system_prompt=self._system_prompt_com_rag(
-                agente_cfg["system_prompt"], bool(contexto_rag)
+            system_prompt=montar_system_prompt(
+                self._system_prompt_com_rag(
+                    agente_cfg["system_prompt"], bool(contexto_rag)
+                )
             ),
             mensagens=mensagens,
             stream=True,
