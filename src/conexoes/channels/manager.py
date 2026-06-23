@@ -27,6 +27,12 @@ class ChannelManager:
         for canal in self._canais.values():
             await canal.stop()
 
+    async def sinalizar_typing(self, canal_nome: str, chat_id: str) -> None:
+        """Aciona 'digitando...' no canal, se ele suportar (capability opcional)."""
+        canal = self._canais.get(canal_nome)
+        if canal is not None and hasattr(canal, "enviar_typing"):
+            await canal.enviar_typing(chat_id)
+
     def _split(self, texto: str, limite: int) -> list[str]:
         if limite <= 0 or len(texto) <= limite:
             return [texto]
