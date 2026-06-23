@@ -21,6 +21,9 @@ def chamar_llm(
     stream: bool = True,
     max_tokens: int = 2048,
     temperatura: float = 0.7,
+    num_ctx: Optional[int] = None,
+    keep_alive: Optional[str] = KEEP_ALIVE_PRINCIPAL,
+    on_token: Optional[Callable[[str], None]] = None,
 ) -> dict:
     r = _provider.chat(
         modelo, system_prompt, mensagens,
