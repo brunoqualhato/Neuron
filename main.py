@@ -20,8 +20,9 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from src.core.logging_config import setup_logging
 from src.core.config import AGENTES, MODELOS, NIVEIS, EMBEDDING_MODEL, PERFIL_ATIVO, PERFIS
-from src.core.llm import verificar_modelo_disponivel
+from src.core.llm import verificar_modelo_disponivel, warmup_modelos
 from src.agentes.coordenador import validar_prompt
 from src.agentes.executor import SistemaAgentes
 from src.agentes.sessao_codigo import (
@@ -131,6 +132,10 @@ def verificar_dependencias():
         console.print("  [red]❌ pip install chromadb[/red]")
         return False
 
+    # Warm-up dos modelos (pré-carrega na RAM para eliminar cold start)
+    console.print("  [dim]🔥 Pré-carregando modelos...[/dim]")
+    warmup_modelos(MODELOS)
+
     console.print()
     return True
 
@@ -159,6 +164,7 @@ def processar_comando(comando: str, sistema: SistemaAgentes) -> bool | str:
         table.add_row("/exportar", "Exportar arquivos gerados para disco")
         table.add_row("/gc", "Garbage collection do ChromaDB (remove antigos)")
         table.add_row("/qualidade", "Métricas de qualidade da sessão")
+        table.add_row("/feedback <texto>", "Salvar preferência/correção para aprendizado")
         table.add_row("/contexto", "Ver histórico recente")
         table.add_row("/resumo", "Ver último resumo da conversa")
         table.add_row("/limpar", "Limpar histórico de mensagens")
@@ -374,6 +380,19 @@ def processar_comando(comando: str, sistema: SistemaAgentes) -> bool | str:
                 title="📊 Qualidade", border_style="blue",
             ))
 
+    elif cmd == "/feedback":
+        if len(partes) < 2:
+            console.print("[yellow]Use: /feedback <sua correção ou preferência>[/yellow]")
+            console.print("[dim]Exemplo: /feedback quando peço API, prefiro FastAPI com SQLAlchemy[/dim]")
+        else:
+            # Pega a última pergunta do histórico para associar
+            msgs = sistema.memoria.ultimas_mensagens(2)
+            ultima_pergunta = next(
+                (m["content"] for m in reversed(msgs) if m["role"] == "user"), "geral"
+            )
+            sistema.salvar_feedback(ultima_pergunta, partes[1].strip())
+            console.print("[green]✅ Preferência salva! Será usada em interações futuras.[/green]")
+
     else:
         console.print(f"[red]Comando desconhecido: {cmd}[/red]")
         console.print("[dim]/ajuda para ver comandos[/dim]")
@@ -387,7 +406,11 @@ def main():
     parser.add_argument("--json", action="store_true", help="Saída em formato JSON")
     parser.add_argument("--agente", "-a", type=str, help="Forçar agente específico")
     parser.add_argument("--nivel", "-n", type=int, choices=[1, 2, 3], help="Forçar nível")
+    parser.add_argument("--debug", action="store_true", help="Ativar logging DEBUG")
     args = parser.parse_args()
+
+    # Configura logging antes de qualquer outra coisa
+    setup_logging(force_level="DEBUG" if args.debug else None)
 
     # ─── Modo batch ───
     if args.query:

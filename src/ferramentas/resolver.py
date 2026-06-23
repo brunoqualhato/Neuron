@@ -119,6 +119,9 @@ COMANDOS_PERMITIDOS = {
 # Subcomandos perigosos mesmo em binários permitidos
 _SUBCMD_BLOQUEADOS = {
     "git": {"push", "remote", "config"},
+    "pip": {"install", "uninstall"},
+    "pip3": {"install", "uninstall"},
+    "npm": {"run", "exec", "install", "uninstall", "publish"},
 }
 
 

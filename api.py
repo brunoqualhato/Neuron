@@ -11,14 +11,41 @@ Endpoints:
 
 from __future__ import annotations
 
+import os
 import threading
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends, Security
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
 
 from src.agentes.executor import SistemaAgentes
+
+
+# ══════════════════════════════════════════════════════════════
+# AUTENTICAÇÃO
+# ══════════════════════════════════════════════════════════════
+
+_API_KEY = os.environ.get("NEURON_API_KEY", "")
+_api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+async def verificar_api_key(api_key: str | None = Security(_api_key_header)):
+    """
+    Middleware de autenticação via header X-API-Key.
+    Se NEURON_API_KEY não está definida no ambiente, autenticação é desabilitada.
+    """
+    if not _API_KEY:
+        # Sem chave configurada → acesso livre (dev local)
+        return None
+
+    if not api_key or api_key != _API_KEY:
+        raise HTTPException(
+            status_code=401,
+            detail="API key inválida ou ausente. Envie header X-API-Key.",
+        )
+    return api_key
 
 
 # ══════════════════════════════════════════════════════════════
@@ -76,7 +103,7 @@ async def health():
 
 
 @app.post("/chat", response_model=RespostaChat)
-async def chat(req: PerguntaRequest):
+async def chat(req: PerguntaRequest, _: str | None = Depends(verificar_api_key)):
     """Processa pergunta com roteamento automático."""
     if not _sistema:
         raise HTTPException(status_code=503, detail="Sistema não inicializado")
@@ -90,7 +117,7 @@ async def chat(req: PerguntaRequest):
 
 
 @app.post("/chat/agente", response_model=RespostaChat)
-async def chat_com_agente(req: PerguntaAgenteRequest):
+async def chat_com_agente(req: PerguntaAgenteRequest, _: str | None = Depends(verificar_api_key)):
     """Processa pergunta com agente forçado."""
     if not _sistema:
         raise HTTPException(status_code=503, detail="Sistema não inicializado")
@@ -104,7 +131,7 @@ async def chat_com_agente(req: PerguntaAgenteRequest):
 
 
 @app.get("/stats")
-async def stats():
+async def stats(_: str | None = Depends(verificar_api_key)):
     """Métricas de performance."""
     if not _sistema:
         raise HTTPException(status_code=503, detail="Sistema não inicializado")

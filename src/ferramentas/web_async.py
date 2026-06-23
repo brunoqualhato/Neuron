@@ -7,8 +7,11 @@ Fallback para versão síncrona se asyncio não estiver disponível.
 from __future__ import annotations
 
 import asyncio
+import logging
 from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Any
+
+logger = logging.getLogger(__name__)
 
 # Pool de threads leve — não consome RAM significativa
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="neuron-io")
@@ -40,12 +43,14 @@ def paralelo_sync(*tarefas: tuple[Callable, tuple]) -> list[Any]:
 
     Economia: busca web (~200-500ms) + ChromaDB query (~50ms)
     executam ao mesmo tempo em vez de sequencial.
+
+    Compatível com Python 3.10+ (usa get_running_loop para detectar contexto async).
     """
     try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            # Já dentro de async — fallback sequencial
-            return [fn(*args) for fn, args in tarefas]
+        asyncio.get_running_loop()
+        # Já dentro de async — fallback sequencial
+        logger.debug("Event loop ativo detectado, executando sequencialmente")
+        return [fn(*args) for fn, args in tarefas]
     except RuntimeError:
         pass
 

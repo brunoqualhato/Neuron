@@ -32,6 +32,7 @@ from rich.panel import Panel
 
 from src.core.config import MODELOS, DATA_DIR
 from src.memoria.semantica import MemoriaSemantica
+from src.agentes.templates import selecionar_template, obter_esqueleto
 
 console = Console()
 
@@ -144,6 +145,29 @@ class SessaoCodigo:
                     bloco = f"ANTERIOR ({ant.arquivo}):\n```\n{conteudo}\n```"
                     partes.append(bloco)
                     chars_usados += len(bloco)
+
+        # Se é o ponto de entrada, lista todos os módulos disponíveis
+        eh_ponto_entrada = step.arquivo and step.arquivo.split(".")[0] in (
+            "main", "index", "app", "server", "cli"
+        )
+        if eh_ponto_entrada and self.scratchpad:
+            modulos_existentes = [
+                f for f in self.scratchpad.keys()
+                if f != step.arquivo and not f.endswith((".md", ".txt", ".json"))
+            ]
+            if modulos_existentes:
+                partes.append(
+                    f"MÓDULOS DISPONÍVEIS PARA IMPORTAR: {', '.join(modulos_existentes)}\n"
+                    f"IMPORTANTE: Este é o PONTO DE ENTRADA. Deve importar e usar os módulos acima "
+                    f"para criar uma interface interativa (CLI com menu ou servidor web)."
+                )
+
+        # Reforça stack se definida nas decisões
+        stack_decisao = next(
+            (d.split("Stack: ")[1] for d in self.decisoes if "Stack:" in d), None
+        )
+        if stack_decisao:
+            partes.append(f"STACK OBRIGATÓRIA: {stack_decisao}. NÃO use outra linguagem.")
 
         partes.append(f"STEP ({step.numero}/{len(self.plano)}): {step.descricao}")
         if step.arquivo:
@@ -445,32 +469,80 @@ def editar_arquivo(sessao: SessaoCodigo, arquivo: str, instrucao: str) -> str:
 # [10] CHAIN-OF-THOUGHT NO PLANEJAMENTO
 # ══════════════════════════════════════════════════════════════
 
-_PROMPT_COT_1 = """Liste as funcionalidades necessárias para: {objetivo}
+_PROMPT_COT_1 = """Analise o projeto solicitado e liste as funcionalidades necessárias para: {objetivo}
 
-Responda como bullet points. Máximo 10 itens. Seja específico e técnico."""
+REGRAS OBRIGATÓRIAS:
+- O projeto DEVE ter um ponto de entrada executável (main.py, index.js, app.py, etc.)
+- O projeto DEVE ter interface interativa: CLI com menu/readline, ou servidor web com endpoints testáveis, ou GUI
+- O projeto DEVE funcionar ao rodar (python main.py, node index.js, etc.) sem configuração extra
+- Inclua: arquivo de configuração/dependências (requirements.txt, package.json), README com instruções de uso
+- Se for CLI: use menus interativos, prompts de input, feedback visual
+- Se for web: inclua ao menos uma rota funcional testável com curl ou navegador
+- ESCOLHA UMA ÚNICA LINGUAGEM/STACK e use apenas ela em todo o projeto. Não misture Python e JavaScript.
+- Se não especificado, use Python com CLI interativa
+
+Responda como bullet points. Máximo 10 itens. Seja específico e técnico.
+O PRIMEIRO item deve ser sempre o ponto de entrada principal com interface interativa.
+O ÚLTIMO item deve ser o README.md com instruções de execução."""
 
 _PROMPT_COT_2 = """Com base nestas funcionalidades:
 {funcionalidades}
 
 Organize em arquivos de código. Cada arquivo = 1 step.
+REGRAS:
+- O PRIMEIRO step DEVE ser o arquivo de dependências (requirements.txt ou package.json)
+- O SEGUNDO step DEVE ser os módulos/classes de lógica de negócio
+- O PENÚLTIMO step DEVE ser o ponto de entrada principal (main.py/index.js/app.py) que importa os módulos e oferece interface interativa
+- O ÚLTIMO step DEVE ser README.md com instruções claras de execução
+- Todos os arquivos devem se conectar via imports
+- O ponto de entrada deve ser EXECUTÁVEL e INTERATIVO (menu, prompts, servidor)
+
 Responda APENAS com JSON:
 {{"steps": [{{"descricao": "...", "arquivo": "nome.ext", "dependencias": []}}]}}"""
 
-_PROMPT_PLANEJAR_SIMPLES = """Decomponha em steps (JSON):
-{{"steps": [{{"descricao":"...", "arquivo":"nome.py", "dependencias":[]}}]}}
-Máx 8 steps. Ordene por dependência."""
+_PROMPT_PLANEJAR_SIMPLES = """Decomponha em steps para criar um projeto FUNCIONAL e EXECUTÁVEL (JSON):
+{{"steps": [{{"descricao":"...", "arquivo":"nome.ext", "dependencias":[]}}]}}
+
+OBRIGATÓRIO:
+- Primeiro step: arquivo de dependências (requirements.txt ou package.json)
+- Steps intermediários: módulos de lógica
+- Penúltimo step: ponto de entrada com interface interativa (CLI menu ou servidor web)
+- Último step: README.md com instruções de execução
+
+Máx 8 steps. Ordene por dependência. O projeto deve funcionar ao rodar o ponto de entrada."""
 
 
 # ══════════════════════════════════════════════════════════════
 # PROMPTS DO LOOP
 # ══════════════════════════════════════════════════════════════
 
-_PROMPT_CODER = """Você é um programador expert. Gere APENAS código do arquivo pedido.
-REGRAS: código completo, imports inclusos, sem explicações, decisões simples, exemplo de uso, arquivo .md explicativo e caso o usuario não defina a stack, utilize Python."""
+_PROMPT_CODER = """Você é um programador expert que cria projetos FUNCIONAIS e EXECUTÁVEIS.
 
-_PROMPT_VALIDAR = """O código atende ao objetivo? JSON: {"valido":true/false,"problemas":[],"decisoes":[]}"""
+REGRAS OBRIGATÓRIAS:
+1. Gere APENAS o código do arquivo pedido — completo e funcional
+2. Inclua TODOS os imports necessários no topo
+3. Se for o ponto de entrada (main.py, index.js, app.py): DEVE ter interface interativa
+   - Para CLI: use loop com menu de opções, input() do usuário, feedback visual
+   - Para web: servidor que suba e responda em localhost
+4. Se for módulo: exporte classes/funções que o ponto de entrada vai importar
+5. Se for requirements.txt/package.json: liste APENAS dependências realmente usadas
+6. Se for README.md: inclua instruções EXATAS de como instalar e executar
+7. Código deve funcionar ao ser executado — sem TODOs, sem stubs, sem "implementar depois"
+8. Use a stack definida pelo usuário. Se não definida, use Python com CLI interativa
+9. NÃO inclua explicações fora do código — apenas comentários inline quando necessário
+10. O projeto deve ser VIVO: o usuário roda e interage imediatamente"""
 
-_PROMPT_RETRY = """PROBLEMAS: {problemas}\n\nGere o código corrigido COMPLETO:"""
+_PROMPT_VALIDAR = """Avalie se o código atende ao objetivo e é EXECUTÁVEL.
+Critérios: código completo (sem TODOs/stubs), imports corretos, interface funcional (se for ponto de entrada).
+Responda JSON: {"valido":true/false,"problemas":[],"decisoes":[]}"""
+
+_PROMPT_RETRY = """PROBLEMAS ENCONTRADOS:
+{problemas}
+
+Gere o código COMPLETO corrigido. Lembre-se:
+- O código deve ser executável sem erros
+- Se for ponto de entrada: deve ter interface interativa funcional
+- Sem TODOs, sem stubs, sem placeholders"""
 
 
 # ══════════════════════════════════════════════════════════════
@@ -679,12 +751,21 @@ def _executar_step_com_validacao(
 def _executar_step_streaming(sessao: SessaoCodigo, step: StepPlano) -> str:
     """Gera código com streaming visual (o usuário vê o código aparecendo)."""
     contexto = sessao.contexto_para_step(step)
+
+    # Injeta esqueleto do template se disponível
+    esqueleto_extra = ""
+    template = selecionar_template(sessao.objetivo)
+    if template and step.arquivo:
+        esqueleto = obter_esqueleto(template, step.arquivo)
+        if esqueleto:
+            esqueleto_extra = f"\n\nESQUELETO BASE (expanda e complete):\n```\n{esqueleto}\n```"
+
     try:
         stream = ollama.chat(
             model=MODELOS["coder"],
             messages=[
                 {"role": "system", "content": _PROMPT_CODER},
-                {"role": "user", "content": contexto},
+                {"role": "user", "content": contexto + esqueleto_extra},
             ],
             options={"temperature": 0.3, "num_predict": 4096},
             stream=True,
@@ -730,10 +811,29 @@ def _pedir_feedback() -> str:
 def _planejar_cot(objetivo: str) -> SessaoCodigo:
     """
     Planejamento em 2 passes:
-      1. Lista funcionalidades necessárias
-      2. Organiza em arquivos/steps
+      1. Tenta selecionar template pré-definido (instantâneo)
+      2. Se não há template adequado: LLM lista funcionalidades + organiza em steps
     Resultado melhor que um prompt único em modelos 1.2B.
     """
+    # Tenta template primeiro (zero custo, melhor resultado com modelos pequenos)
+    template = selecionar_template(objetivo)
+    if template:
+        console.print(f"[dim]  📐 Template: {template.nome} ({template.stack})[/dim]")
+        from src.agentes.sessao_codigo import StepPlano
+        steps = [
+            StepPlano(
+                numero=i,
+                descricao=s.descricao,
+                arquivo=s.arquivo,
+                dependencias=s.dependencias,
+            )
+            for i, s in enumerate(template.gerar_plano(), 1)
+        ]
+        sessao = SessaoCodigo(objetivo=objetivo, plano=steps)
+        sessao.decisoes.append(f"Template: {template.nome}, Stack: {template.stack}")
+        return sessao
+
+    # Sem template — usa LLM com chain-of-thought
     try:
         # Passo 1: listar funcionalidades
         r1 = ollama.chat(
@@ -752,6 +852,7 @@ def _planejar_cot(objetivo: str) -> SessaoCodigo:
             messages=[
                 {"role": "user", "content": _PROMPT_COT_2.format(funcionalidades=funcionalidades)},
             ],
+            format="json",
             options={"temperature": 0.2, "num_predict": 500},
         )
         raw = r2["message"]["content"].strip()
@@ -771,6 +872,7 @@ def _planejar_simples(objetivo: str) -> SessaoCodigo:
                 {"role": "system", "content": _PROMPT_PLANEJAR_SIMPLES},
                 {"role": "user", "content": objetivo},
             ],
+            format="json",
             options={"temperature": 0.2, "num_predict": 500},
         )
         return _parse_plano(objetivo, response["message"]["content"].strip())
@@ -815,6 +917,13 @@ def _validar_step(sessao: SessaoCodigo, step: StepPlano, codigo: str) -> dict:
         probs.append("TODOs não resolvidos")
     if codigo.count("pass") > 3 and len(codigo) < 400:
         probs.append("implementação stub")
+    # Conta linhas com apenas "pass" ou "# Implementação..."
+    linhas_stub = sum(
+        1 for linha in codigo.split("\n")
+        if linha.strip() in ("pass",) or linha.strip().startswith("# Implementação")
+    )
+    if linhas_stub > 2:
+        probs.append(f"{linhas_stub} linhas stub/pass — código incompleto")
     if probs:
         return {"valido": False, "problemas": probs, "decisoes": []}
 

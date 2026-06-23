@@ -1,14 +1,16 @@
 """
-Coordenador: roteia perguntas para o agente correto.
-Estratégias:
-1. Roteamento rápido por palavras-chave (sem LLM)
-2. Roteamento inteligente via LLM (fallback)
+Coordenador: validação de prompts e roteamento por palavras-chave.
+
+Nota: O roteamento principal agora é feito pelo analisador de intenção
+(src/core/analisador.py) que usa LLM. Este módulo mantém:
+  - Validação de prompt (sem LLM)
+  - Roteamento por palavras-chave (usado como fallback rápido)
+  - Detecção de baixo sinal
 """
 
 import re
 
-from src.core.config import AGENTES, COORDENADOR_MODELO, COORDENADOR_SYSTEM
-from src.core.llm import chamar_coordenador
+from src.core.config import AGENTES
 from src.core.utils import normalizar
 
 
@@ -88,38 +90,13 @@ def rotear_por_palavras_chave(texto: str) -> str | None:
     return melhor
 
 
-def rotear_por_llm(texto: str) -> str:
-    """Usa o LLM coordenador para classificar a pergunta."""
-    resposta = chamar_coordenador(texto, COORDENADOR_MODELO, COORDENADOR_SYSTEM)
-
-    for nome in AGENTES:
-        if nome in resposta:
-            return nome
-
-    return "generalista"
-
-
-def rotear(texto: str) -> str:
-    """
-    Estratégia híbrida:
-    1. Baixo sinal -> generalista (barato)
-    2. Palavras-chave (instantâneo)
-    3. LLM coordenador (fallback)
-    """
-    if _baixo_sinal(texto):
-        return "generalista"
-
-    agente = rotear_por_palavras_chave(texto)
-    if agente:
-        return agente
-
-    return rotear_por_llm(texto)
-
-
 def validar_prompt(texto: str) -> tuple[bool, str]:
     """
     Valida se o prompt tem sinal semântico mínimo para roteamento.
     Retorna (valido, motivo_ou_vazio).
+
+    Esta é uma validação LEVE (sem LLM) — rejeita apenas input
+    claramente insuficiente para processamento.
     """
     texto_limpo = texto.strip()
 
@@ -136,55 +113,3 @@ def validar_prompt(texto: str) -> tuple[bool, str]:
         )
 
     return True, ""
-
-
-def rotear_com_validacao(texto: str) -> tuple[str | None, str | None]:
-    """
-    Valida o prompt antes do roteamento e tenta evitar despacho ambíguo.
-    Retorna (nome_agente, mensagem_erro).
-    """
-    texto_limpo = texto.strip().lower()
-    if texto_limpo in SAUDACOES_CURTAS:
-        return "generalista", None
-
-    valido, motivo = validar_prompt(texto)
-    if not valido:
-        return None, motivo
-
-    texto_norm = normalizar(texto)
-    tokens = _tokens(texto)
-    pontuacao: dict[str, int] = {}
-
-    for nome, agente in AGENTES.items():
-        if nome == "generalista":
-            continue
-
-        score = 0
-        for palavra in agente["palavras_chave"]:
-            palavra_norm = normalizar(palavra)
-            if " " in palavra_norm and palavra_norm in texto_norm:
-                score += 2
-                continue
-            if palavra_norm in tokens:
-                score += 2
-            elif palavra_norm in texto_norm:
-                score += 1
-
-        if score > 0:
-            pontuacao[nome] = score
-
-    if pontuacao:
-        ranking = sorted(pontuacao.items(), key=lambda item: item[1], reverse=True)
-        melhor, melhor_score = ranking[0]
-        segundo_score = ranking[1][1] if len(ranking) > 1 else 0
-
-        if melhor_score >= 2 and (melhor_score - segundo_score) >= 2:
-            return melhor, None
-
-        if melhor_score >= 2 and (melhor_score - segundo_score) <= 1:
-            return None, (
-                "Seu pedido parece misturar mais de um perfil de agente. "
-                "Refine em uma frase dizendo o foco principal: programar, pesquisar ou analisar."
-            )
-
-    return rotear_por_llm(texto), None

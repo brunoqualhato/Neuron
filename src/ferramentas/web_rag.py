@@ -24,6 +24,7 @@ Performance (Mac M1 8GB):
 
 from __future__ import annotations
 
+import logging
 import re
 import hashlib
 import time
@@ -37,6 +38,8 @@ from typing import Optional
 from ddgs import DDGS
 
 from src.core.config import MODELOS, DATA_DIR, WEB_RAG_MAX_PAGINAS, WEB_RAG_FETCH_TIMEOUT, WEB_RAG_MAX_MD_CHARS, WEB_RAG_CACHE_TTL
+
+logger = logging.getLogger(__name__)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -86,7 +89,8 @@ def buscar_urls(query: str, max_resultados: int = 5) -> list[ResultadoBusca]:
             for r in raw
             if r.get("href")
         ]
-    except Exception:
+    except Exception as e:
+        logger.warning("Erro na busca DuckDuckGo: %s", e)
         return []
 
 
@@ -116,8 +120,8 @@ def _salvar_cache(url: str, conteudo: str):
     arquivo = CACHE_FETCH_DIR / f"{_url_hash(url)}.md"
     try:
         arquivo.write_text(conteudo, encoding="utf-8")
-    except OSError:
-        pass
+    except OSError as e:
+        logger.debug("Erro ao salvar cache web para %s: %s", url, e)
 
 
 def fetch_pagina(url: str) -> Optional[str]:
@@ -145,9 +149,11 @@ def fetch_pagina(url: str) -> Optional[str]:
 
             html = resp.read(MAX_HTML_BYTES).decode("utf-8", errors="ignore")
             return html
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError, UnicodeDecodeError):
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError, UnicodeDecodeError) as e:
+        logger.debug("Fetch falhou para %s: %s", url, e)
         return None
-    except Exception:
+    except Exception as e:
+        logger.debug("Fetch erro inesperado para %s: %s", url, e)
         return None
 
 

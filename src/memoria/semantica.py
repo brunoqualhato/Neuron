@@ -4,6 +4,7 @@ Busca por similaridade vetorial usando embeddings locais.
 """
 
 import hashlib
+import logging
 import re
 from datetime import datetime
 
@@ -14,6 +15,8 @@ from src.core.config import (
     CHROMADB_DIR, CHROMADB_COLLECTION, CHROMADB_TOP_K,
     CHROMADB_THRESHOLD, EMBEDDING_MODEL,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class MemoriaSemantica:
@@ -43,6 +46,11 @@ class MemoriaSemantica:
         self._embedding_disponivel = None
         self._inicializado = True
 
+    @classmethod
+    def resetar_instancia(cls):
+        """Permite resetar o singleton (útil para testes)."""
+        cls._instancia = None
+
     def _verificar_embedding(self) -> bool:
         """Verifica se o modelo de embedding está disponível."""
         if self._embedding_disponivel is not None:
@@ -50,7 +58,8 @@ class MemoriaSemantica:
         try:
             ollama_client.embeddings(model=EMBEDDING_MODEL, prompt="teste")
             self._embedding_disponivel = True
-        except Exception:
+        except Exception as e:
+            logger.debug("Modelo de embedding '%s' indisponível: %s", EMBEDDING_MODEL, e)
             self._embedding_disponivel = False
         return self._embedding_disponivel
 
@@ -101,7 +110,6 @@ class MemoriaSemantica:
 
                 if similaridade >= CHROMADB_THRESHOLD:
                     score_lexical = self._score_lexical(pergunta, doc)
-                    # Híbrido leve: semântico dominante + ajuste lexical.
                     score_hibrido = (similaridade * 0.82) + (score_lexical * 0.18)
                     documentos.append({
                         "conteudo": doc,
@@ -115,7 +123,8 @@ class MemoriaSemantica:
 
             return documentos
 
-        except Exception:
+        except Exception as e:
+            logger.warning("Erro ao buscar similar no ChromaDB: %s", e)
             return []
 
     def adicionar(self, pergunta: str, resposta: str, agente: str = "", metadata: dict = None):
@@ -132,7 +141,6 @@ class MemoriaSemantica:
             # Se já existe um doc com mesmo ID, verifica se vale atualizar
             existing = self.collection.get(ids=[doc_id])
             if existing and existing["ids"]:
-                # Já existe — atualiza apenas se a resposta for mais longa (melhor qualidade)
                 doc_existente = existing["documents"][0] if existing["documents"] else ""
                 if len(documento) <= len(doc_existente):
                     return  # Não sobrescreve com resposta pior
@@ -153,8 +161,8 @@ class MemoriaSemantica:
                 documents=[documento],
                 metadatas=[meta],
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Erro ao adicionar ao ChromaDB: %s", e)
 
     def adicionar_conhecimento(self, texto: str, fonte: str = "", tipo: str = "conhecimento"):
         """Adiciona conhecimento avulso (docs, notas, etc) com deduplicação."""
@@ -162,7 +170,6 @@ class MemoriaSemantica:
             return
 
         try:
-            # Deduplicação por conteúdo
             doc_id = hashlib.sha256(texto.strip().lower()[:200].encode()).hexdigest()[:16]
 
             existing = self.collection.get(ids=[doc_id])
@@ -181,8 +188,8 @@ class MemoriaSemantica:
                     "criado_em": datetime.now().isoformat(),
                 }],
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Erro ao adicionar conhecimento ao ChromaDB: %s", e)
 
     def total_documentos(self) -> int:
         return self.collection.count()

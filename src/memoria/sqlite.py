@@ -3,10 +3,13 @@ Camada 3 de memória: SQLite.
 Histórico, resumos, contexto persistente e métricas.
 """
 
+import logging
 import sqlite3
 from datetime import datetime
 
 from src.core.config import MEMORIA_ARQUIVO
+
+logger = logging.getLogger(__name__)
 
 
 class Memoria:
@@ -14,6 +17,8 @@ class Memoria:
 
     def __init__(self, arquivo: str = MEMORIA_ARQUIVO):
         self.conn = sqlite3.connect(arquivo)
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA synchronous=NORMAL")
         self._criar_tabelas()
 
     def _criar_tabelas(self):
