@@ -162,6 +162,13 @@ class SessaoCodigo:
                     f"para criar uma interface interativa (CLI com menu ou servidor web)."
                 )
 
+        # Reforça stack se definida nas decisões
+        stack_decisao = next(
+            (d.split("Stack: ")[1] for d in self.decisoes if "Stack:" in d), None
+        )
+        if stack_decisao:
+            partes.append(f"STACK OBRIGATÓRIA: {stack_decisao}. NÃO use outra linguagem.")
+
         partes.append(f"STEP ({step.numero}/{len(self.plano)}): {step.descricao}")
         if step.arquivo:
             partes.append(f"GERE: {step.arquivo}")
@@ -471,7 +478,8 @@ REGRAS OBRIGATÓRIAS:
 - Inclua: arquivo de configuração/dependências (requirements.txt, package.json), README com instruções de uso
 - Se for CLI: use menus interativos, prompts de input, feedback visual
 - Se for web: inclua ao menos uma rota funcional testável com curl ou navegador
-- Se não especificado, use Python com CLI interativa (rich ou input/print)
+- ESCOLHA UMA ÚNICA LINGUAGEM/STACK e use apenas ela em todo o projeto. Não misture Python e JavaScript.
+- Se não especificado, use Python com CLI interativa
 
 Responda como bullet points. Máximo 10 itens. Seja específico e técnico.
 O PRIMEIRO item deve ser sempre o ponto de entrada principal com interface interativa.

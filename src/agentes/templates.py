@@ -45,7 +45,12 @@ class TemplateProjeto:
 TEMPLATES: list[TemplateProjeto] = [
     TemplateProjeto(
         nome="cli_python",
-        palavras_chave=["cli", "terminal", "menu", "interativo", "lista", "contato", "tarefa", "todo", "cadastro", "gerenciador"],
+        palavras_chave=[
+            "cli", "terminal", "menu", "interativo", "lista", "contato", "tarefa",
+            "todo", "cadastro", "gerenciador", "calculadora", "conversor", "jogo",
+            "quiz", "agenda", "inventário", "estoque", "registro", "controle",
+            "sistema", "ferramenta", "utilitário", "app", "aplicativo",
+        ],
         stack="Python",
         steps=[
             TemplateStep("Arquivo de dependências", "requirements.txt"),
