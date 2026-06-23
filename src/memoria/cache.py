@@ -6,10 +6,13 @@ Eviction policy: máximo 500 entradas, remove as menos usadas.
 
 import json
 import hashlib
+import logging
 from pathlib import Path
 from datetime import datetime
 
 from src.core.config import CACHE_ARQUIVO, CACHE_HABILITADO
+
+logger = logging.getLogger(__name__)
 
 CACHE_MAX_ENTRADAS = 500  # Limite para não crescer indefinidamente
 
@@ -20,20 +23,29 @@ class Cache:
     def __init__(self, arquivo: str = CACHE_ARQUIVO):
         self.arquivo = Path(arquivo)
         self.dados: dict[str, dict] = {}
+        self._dirty = False
         self._carregar()
 
     def _carregar(self):
         if self.arquivo.exists():
             try:
                 self.dados = json.loads(self.arquivo.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, IOError):
+            except (json.JSONDecodeError, IOError) as e:
+                logger.warning("Cache corrompido, iniciando vazio: %s", e)
                 self.dados = {}
 
     def _salvar(self):
-        self.arquivo.parent.mkdir(parents=True, exist_ok=True)
-        self.arquivo.write_text(
-            json.dumps(self.dados, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        """Escrita atômica: write → rename para evitar corrupção."""
+        try:
+            self.arquivo.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.arquivo.with_suffix(".tmp")
+            tmp.write_text(
+                json.dumps(self.dados, ensure_ascii=False), encoding="utf-8"
+            )
+            tmp.replace(self.arquivo)  # Atômico no mesmo filesystem
+            self._dirty = False
+        except OSError as e:
+            logger.warning("Erro ao salvar cache: %s", e)
 
     def _evict_se_necessario(self):
         """Remove entradas LRU se exceder tamanho máximo."""
@@ -83,6 +95,7 @@ class Cache:
         if entry:
             entry["hits"] = entry.get("hits", 0) + 1
             entry["ultimo_uso"] = datetime.now().isoformat()
+            self._dirty = True
             self._salvar()
             return entry["resposta"]
         return None

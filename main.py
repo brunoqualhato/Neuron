@@ -20,6 +20,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from src.core.logging_config import setup_logging
 from src.core.config import AGENTES, MODELOS, NIVEIS, EMBEDDING_MODEL, PERFIL_ATIVO, PERFIS
 from src.core.llm import verificar_modelo_disponivel
 from src.agentes.coordenador import validar_prompt
@@ -387,7 +388,11 @@ def main():
     parser.add_argument("--json", action="store_true", help="Saída em formato JSON")
     parser.add_argument("--agente", "-a", type=str, help="Forçar agente específico")
     parser.add_argument("--nivel", "-n", type=int, choices=[1, 2, 3], help="Forçar nível")
+    parser.add_argument("--debug", action="store_true", help="Ativar logging DEBUG")
     args = parser.parse_args()
+
+    # Configura logging antes de qualquer outra coisa
+    setup_logging(force_level="DEBUG" if args.debug else None)
 
     # ─── Modo batch ───
     if args.query:

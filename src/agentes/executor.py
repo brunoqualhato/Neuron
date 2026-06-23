@@ -7,7 +7,9 @@ Pipeline por nível:
   Nível 3: ...nivel1... → ChromaDB RAG → Modelo Completo (4B) + contexto rico
 """
 
+import logging
 import time
+
 from rich.console import Console
 from rich.panel import Panel
 
@@ -33,16 +35,17 @@ from src.ferramentas.web_rag import pesquisar_web_profunda, pesquisar_web_rapida
 from src.ferramentas.web_async import paralelo_sync
 from src.agentes.base import Agente, ConfigAgente, criar_agente
 
+logger = logging.getLogger(__name__)
 console = Console()
 
 
 class SistemaAgentes:
     """Gerencia a execução dos agentes com 3 níveis de performance."""
 
-    def __init__(self):
-        self.memoria = Memoria()
-        self.cache = Cache()
-        self.semantica = MemoriaSemantica()
+    def __init__(self, memoria=None, cache=None, semantica=None):
+        self.memoria = memoria or Memoria()
+        self.cache = cache or Cache()
+        self.semantica = semantica or MemoriaSemantica()
         self.nivel_forcado: int | None = None
         self._agentes: dict[str, Agente] = self._inicializar_agentes()
 
@@ -66,6 +69,10 @@ class SistemaAgentes:
         """Retorna instância do agente (fallback para generalista)."""
         return self._agentes.get(nome, self._agentes["generalista"])
 
+    # ══════════════════════════════════════════════════════════════
+    # PIPELINE PRINCIPAL
+    # ══════════════════════════════════════════════════════════════
+
     def executar(self, nome_agente: str, pergunta: str) -> str:
         """
         Pipeline principal com análise de intenção via LLM.
@@ -76,13 +83,54 @@ class SistemaAgentes:
           3. Se precisa web → fetch + extract primeiro
           4. LLM final responde grounded nos dados coletados
         """
-        agente_cfg = AGENTES[nome_agente]
-        agente_obj = self._obter_agente(nome_agente)
         inicio = time.time()
 
-        # ═══════════════════════════════════════════
-        # ANÁLISE DE INTENÇÃO (LLM coordenadora — chamada ÚNICA)
-        # ═══════════════════════════════════════════
+        # Análise de intenção + roteamento de agente
+        intencao, nome_agente, agente_cfg, agente_obj = self._analisar_e_rotear(
+            nome_agente, pergunta
+        )
+
+        # Classificar complexidade e aplicar hooks do agente
+        nivel = self._classificar_nivel(pergunta, agente_cfg)
+        pergunta, nivel = agente_obj.pre_execucao(pergunta, nivel)
+        console.print(f"[dim]{explicar_nivel(nivel)}[/dim]")
+
+        # Pipeline nível 1: ferramentas, cache, ChromaDB
+        resultado_n1, docs_similares = self._pipeline_nivel1(
+            intencao, pergunta, nome_agente, nivel, inicio
+        )
+        if resultado_n1:
+            return resultado_n1
+
+        # Promover se nível 1 não resolveu
+        if nivel == 1:
+            nivel = 2
+            console.print("[dim]↑ Promovido para Nível 2[/dim]")
+
+        # Pipeline nível 2: modelo rápido
+        if nivel == 2:
+            resultado_n2 = self._pipeline_nivel2(
+                intencao, pergunta, nome_agente, agente_cfg, agente_obj, inicio
+            )
+            if resultado_n2:
+                return resultado_n2
+            # Promoção automática para nível 3
+            nivel = 3
+
+        # Pipeline nível 3: modelo profundo + RAG
+        return self._pipeline_nivel3(
+            intencao, pergunta, nome_agente, agente_cfg, agente_obj,
+            docs_similares, inicio
+        )
+
+    # ══════════════════════════════════════════════════════════════
+    # ANÁLISE E ROTEAMENTO
+    # ══════════════════════════════════════════════════════════════
+
+    def _analisar_e_rotear(
+        self, nome_agente: str, pergunta: str
+    ) -> tuple[IntencaoAnalisada, str, dict, Agente]:
+        """Analisa intenção e redireciona agente se necessário."""
         intencao = analisar_intencao(pergunta)
         console.print(
             f"[dim]🧠 Intenção: agente={intencao.agente}, web={intencao.precisa_web}, "
@@ -90,32 +138,43 @@ class SistemaAgentes:
         )
 
         # Redireciona se analisador sugeriu agente diferente
-        # (exceto se o agente foi forçado pelo usuário via /agente)
         if nome_agente == "generalista" and intencao.agente != "generalista":
             nome_agente = intencao.agente
-            agente_cfg = AGENTES[nome_agente]
-            agente_obj = self._obter_agente(nome_agente)
             console.print(f"[dim]🎯 {nome_agente}[/dim]")
 
-        # Classificar complexidade
+        agente_cfg = AGENTES[nome_agente]
+        agente_obj = self._obter_agente(nome_agente)
+        return intencao, nome_agente, agente_cfg, agente_obj
+
+    def _classificar_nivel(self, pergunta: str, agente_cfg: dict) -> int:
+        """Determina o nível de execução baseado em forçamento ou heurística."""
         if self.nivel_forcado:
             nivel = self.nivel_forcado
             self.nivel_forcado = None
-        else:
-            nivel = classificar_complexidade(pergunta)
-            if nivel == 2 and agente_cfg.get("nivel_preferido", 2) == 3:
-                if len(pergunta.split()) > 12:
-                    nivel = 3
+            return nivel
 
-        # Hook pré-execução do agente (permite ajuste de nível/query)
-        pergunta, nivel = agente_obj.pre_execucao(pergunta, nivel)
+        nivel = classificar_complexidade(pergunta)
+        if nivel == 2 and agente_cfg.get("nivel_preferido", 2) == 3:
+            if len(pergunta.split()) > 12:
+                nivel = 3
+        return nivel
 
-        console.print(f"[dim]{explicar_nivel(nivel)}[/dim]")
+    # ══════════════════════════════════════════════════════════════
+    # PIPELINE NÍVEL 1: FERRAMENTAS LOCAIS (sem LLM)
+    # ══════════════════════════════════════════════════════════════
 
-        # ═══════════════════════════════════════════
-        # NÍVEL 1: FERRAMENTAS LOCAIS (sem LLM)
-        # ═══════════════════════════════════════════
-
+    def _pipeline_nivel1(
+        self,
+        intencao: IntencaoAnalisada,
+        pergunta: str,
+        nome_agente: str,
+        nivel: int,
+        inicio: float,
+    ) -> tuple[str | None, list[dict]]:
+        """
+        Tenta resolver sem LLM: ferramenta, cache, ChromaDB.
+        Retorna (resposta_ou_None, docs_similares_para_reuso).
+        """
         # 1a. Ferramenta identificada pelo analisador
         resultado_ferramenta = self._executar_ferramenta_por_intencao(intencao, pergunta)
         if resultado_ferramenta:
@@ -123,16 +182,16 @@ class SistemaAgentes:
                 Panel(resultado_ferramenta, title="⚡ Nível 1 • Ferramenta", border_style="cyan")
             )
             self._salvar(pergunta, resultado_ferramenta, nome_agente, nivel=1, inicio=inicio)
-            return resultado_ferramenta
+            return resultado_ferramenta, []
 
-        # 1b. Fallback: tenta resolver com ferramentas heurísticas (cálculo puro, expressão)
+        # 1b. Fallback: ferramentas heurísticas
         resultado_heuristico = executar_ferramentas(pergunta)
         if resultado_heuristico:
             console.print(
                 Panel(resultado_heuristico, title="⚡ Nível 1 • Ferramenta", border_style="cyan")
             )
             self._salvar(pergunta, resultado_heuristico, nome_agente, nivel=1, inicio=inicio)
-            return resultado_heuristico
+            return resultado_heuristico, []
 
         # 1c. Cache exato — ignorado se precisa de dados frescos
         cache_key = f"{nome_agente}:{pergunta}"
@@ -141,69 +200,132 @@ class SistemaAgentes:
             console.print("[dim]📋 Nível 1 • Cache[/dim]")
             console.print(resposta_cache, style="green")
             self._salvar_metrica(nome_agente, 1, inicio, fonte="cache")
-            return resposta_cache
+            return resposta_cache, []
 
         # 1d. ChromaDB — busca semântica
         docs_similares = self.semantica.buscar_similar(pergunta)
         if docs_similares and nivel == 1 and not intencao.precisa_web:
             melhor = docs_similares[0]
-            if melhor.get("score_hibrido", melhor["similaridade"]) >= CHROMADB_NIVEL1_THRESHOLD:
+            score = melhor.get("score_hibrido", melhor["similaridade"])
+            if score >= CHROMADB_NIVEL1_THRESHOLD:
                 resposta = melhor["conteudo"].split("Resposta: ", 1)[-1]
-                console.print(
-                    f"[dim]🧲 Nível 1 • ChromaDB ({melhor.get('score_hibrido', melhor['similaridade']):.0%})[/dim]"
-                )
+                console.print(f"[dim]🧲 Nível 1 • ChromaDB ({score:.0%})[/dim]")
                 console.print(resposta, style="green")
                 self._salvar_metrica(nome_agente, 1, inicio, fonte="chromadb")
-                return resposta
+                return resposta, docs_similares
 
-        # Promover se nível 1 não resolveu
-        if nivel == 1:
-            nivel = 2
-            console.print("[dim]↑ Promovido para Nível 2[/dim]")
+        return None, docs_similares
 
-        # ═══════════════════════════════════════════
-        # NÍVEL 2: RÁPIDO (modelo 1.7B)
-        # ═══════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════
+    # PIPELINE NÍVEL 2: RÁPIDO (modelo leve)
+    # ══════════════════════════════════════════════════════════════
 
-        if nivel == 2:
-            contexto_busca = ""
-            if intencao.precisa_web:
-                console.print("[dim]🔍 Buscando na web (rápido)...[/dim]")
-                contexto_busca = pesquisar_web_rapida(pergunta, max_paginas=2)
+    def _pipeline_nivel2(
+        self,
+        intencao: IntencaoAnalisada,
+        pergunta: str,
+        nome_agente: str,
+        agente_cfg: dict,
+        agente_obj: Agente,
+        inicio: float,
+    ) -> str | None:
+        """
+        Executa com modelo rápido. Retorna resposta ou None se deve promover.
+        """
+        contexto_busca = ""
+        if intencao.precisa_web:
+            console.print("[dim]🔍 Buscando na web (rápido)...[/dim]")
+            contexto_busca = pesquisar_web_rapida(pergunta, max_paginas=2)
 
-            mensagens = self._montar_contexto(2, contexto_busca, pergunta)
+        mensagens = self._montar_contexto(2, contexto_busca, pergunta)
 
-            resultado = chamar_llm(
-                modelo=agente_cfg["modelo_rapido"],
-                system_prompt=agente_cfg["system_prompt"],
-                mensagens=mensagens,
-                stream=True,
-                max_tokens=512,
-                temperatura=0.4,
-            )
+        resultado = chamar_llm(
+            modelo=agente_cfg["modelo_rapido"],
+            system_prompt=agente_cfg["system_prompt"],
+            mensagens=mensagens,
+            stream=True,
+            max_tokens=512,
+            temperatura=0.4,
+        )
 
-            self._salvar(pergunta, resultado["resposta"], nome_agente, nivel=2, inicio=inicio)
-            self._salvar_metrica(
-                nome_agente, 2, inicio,
-                tokens_in=resultado["tokens_entrada"],
-                tokens_out=resultado["tokens_saida"],
-                fonte="llm_rapido",
-            )
-            if self._deve_promover_para_profundo(pergunta, resultado["resposta"]):
-                console.print("[dim]↑ Ajuste de precisão: promovido para Nível 3[/dim]")
-                nivel = 3
-            else:
-                resposta_final = agente_obj.pos_execucao(pergunta, resultado["resposta"])
-                return resposta_final
+        self._salvar(pergunta, resultado["resposta"], nome_agente, nivel=2, inicio=inicio)
+        self._salvar_metrica(
+            nome_agente, 2, inicio,
+            tokens_in=resultado["tokens_entrada"],
+            tokens_out=resultado["tokens_saida"],
+            fonte="llm_rapido",
+        )
 
-        # ═══════════════════════════════════════════
-        # NÍVEL 3: PROFUNDO (modelo 4B + RAG)
-        # ═══════════════════════════════════════════
+        if self._deve_promover_para_profundo(pergunta, resultado["resposta"]):
+            console.print("[dim]↑ Ajuste de precisão: promovido para Nível 3[/dim]")
+            return None  # Sinaliza promoção
 
-        # Paraleliza busca web + ChromaDB para reduzir latência
+        resposta_final = agente_obj.pos_execucao(pergunta, resultado["resposta"])
+        return resposta_final
+
+    # ══════════════════════════════════════════════════════════════
+    # PIPELINE NÍVEL 3: PROFUNDO (modelo grande + RAG)
+    # ══════════════════════════════════════════════════════════════
+
+    def _pipeline_nivel3(
+        self,
+        intencao: IntencaoAnalisada,
+        pergunta: str,
+        nome_agente: str,
+        agente_cfg: dict,
+        agente_obj: Agente,
+        docs_similares: list[dict],
+        inicio: float,
+    ) -> str:
+        """Executa com modelo profundo, RAG e web search completo."""
+        contexto_busca, contexto_rag = self._obter_contextos_nivel3(
+            intencao, pergunta, docs_similares
+        )
+
+        mensagens = self._montar_contexto(
+            n_msgs=5,
+            contexto_busca=contexto_busca,
+            pergunta=pergunta,
+            contexto_rag=contexto_rag,
+        )
+
+        modelo_profundo = self._resolver_modelo_profundo(agente_cfg)
+
+        resultado = chamar_llm(
+            modelo=modelo_profundo,
+            system_prompt=self._system_prompt_com_rag(
+                agente_cfg["system_prompt"], bool(contexto_rag)
+            ),
+            mensagens=mensagens,
+            stream=True,
+            max_tokens=2048,
+            temperatura=0.7,
+        )
+
+        self._salvar(pergunta, resultado["resposta"], nome_agente, nivel=3, inicio=inicio)
+        self._salvar_metrica(
+            nome_agente, 3, inicio,
+            tokens_in=resultado["tokens_entrada"],
+            tokens_out=resultado["tokens_saida"],
+            fonte="llm_profundo",
+        )
+
+        # Resumo automático a cada 10 mensagens
+        if self.memoria.total_mensagens() % 10 == 0:
+            self._gerar_resumo(agente_cfg["modelo_rapido"])
+
+        resposta_final = agente_obj.pos_execucao(pergunta, resultado["resposta"])
+        return resposta_final
+
+    def _obter_contextos_nivel3(
+        self,
+        intencao: IntencaoAnalisada,
+        pergunta: str,
+        docs_similares: list[dict],
+    ) -> tuple[str, str]:
+        """Obtém contexto web e RAG, paralelizando quando possível."""
         contexto_busca = ""
         contexto_rag = ""
-
         tem_docs_chromadb = bool(docs_similares)
 
         if intencao.precisa_web and tem_docs_chromadb:
@@ -224,92 +346,35 @@ class SistemaAgentes:
                 console.print(f"[dim]🧲 RAG: {len(docs_rag)} docs do ChromaDB[/dim]")
                 contexto_rag = self._construir_contexto_rag(docs_rag)
 
-        mensagens = self._montar_contexto(
-            n_msgs=5,
-            contexto_busca=contexto_busca,
-            pergunta=pergunta,
-            contexto_rag=contexto_rag,
-        )
+        return contexto_busca, contexto_rag
 
+    def _resolver_modelo_profundo(self, agente_cfg: dict) -> str:
+        """Resolve qual modelo profundo usar, com fallback automático."""
         modelo_profundo = agente_cfg["modelo_profundo"]
-        if not verificar_modelo_disponivel(modelo_profundo):
-            # Tenta encontrar o melhor modelo instalado antes de cair no rapido
-            candidatos = ["qwen3:4b", "qwen2.5:3b", "llama3.2:3b", agente_cfg["modelo_rapido"]]
-            modelo_profundo = next(
-                (m for m in candidatos if verificar_modelo_disponivel(m)),
-                agente_cfg["modelo_rapido"],
-            )
-            console.print(
-                f"[yellow]⚠️  Modelo profundo '{agente_cfg['modelo_profundo']}' não instalado. "
-                f"Usando '{modelo_profundo}' como fallback.[/yellow]"
-            )
+        if verificar_modelo_disponivel(modelo_profundo):
+            return modelo_profundo
 
-        resultado = chamar_llm(
-            modelo=modelo_profundo,
-            system_prompt=self._system_prompt_com_rag(agente_cfg["system_prompt"], bool(contexto_rag)),
-            mensagens=mensagens,
-            stream=True,
-            max_tokens=2048,
-            temperatura=0.7,
+        candidatos = ["qwen3:4b", "qwen2.5:3b", "llama3.2:3b", agente_cfg["modelo_rapido"]]
+        modelo_profundo = next(
+            (m for m in candidatos if verificar_modelo_disponivel(m)),
+            agente_cfg["modelo_rapido"],
         )
-
-        self._salvar(pergunta, resultado["resposta"], nome_agente, nivel=3, inicio=inicio)
-        self._salvar_metrica(
-            nome_agente, 3, inicio,
-            tokens_in=resultado["tokens_entrada"],
-            tokens_out=resultado["tokens_saida"],
-            fonte="llm_profundo",
+        console.print(
+            f"[yellow]⚠️  Modelo profundo '{agente_cfg['modelo_profundo']}' não instalado. "
+            f"Usando '{modelo_profundo}' como fallback.[/yellow]"
         )
+        return modelo_profundo
 
-        # Resumo automático
-        if self.memoria.total_mensagens() % 10 == 0:
-            self._gerar_resumo(agente_cfg["modelo_rapido"])
+    # ══════════════════════════════════════════════════════════════
+    # FERRAMENTAS
+    # ══════════════════════════════════════════════════════════════
 
-        resposta_final = agente_obj.pos_execucao(pergunta, resultado["resposta"])
-        return resposta_final
-
-    def _system_prompt_com_rag(self, base_prompt: str, tem_rag: bool) -> str:
-        """Aplica instruções de grounding quando houver contexto recuperado."""
-        if not tem_rag:
-            return base_prompt
-        complemento = (
-            "\n\n## REGRAS DE GROUNDING (OBRIGATÓRIAS):\n"
-            "1. Responda EXCLUSIVAMENTE com base no contexto fornecido abaixo.\n"
-            "2. Se o contexto não contém a informação necessária, diga explicitamente: "
-            "'Não encontrei essa informação nas fontes consultadas.'\n"
-            "3. NUNCA invente dados, estatísticas, datas ou fatos não presentes no contexto.\n"
-            "4. Cite a fonte quando possível (URL ou título do documento).\n"
-            "5. Se houver conflito entre fontes, mencione ambas perspectivas.\n"
-            "6. Prefira responder com bullet points para clareza."
-        )
-        return f"{base_prompt}{complemento}"
-
-    def _construir_contexto_rag(self, docs: list[dict]) -> str:
-        """Compacta o contexto RAG para reduzir ruído sem perder cobertura."""
-        blocos: list[str] = []
-        total_chars = 0
-        for idx, doc in enumerate(docs, 1):
-            score = doc.get("score_hibrido", doc.get("similaridade", 0.0))
-            conteudo = doc.get("conteudo", "").strip()
-            if not conteudo:
-                continue
-
-            # Mantém o contexto dentro de um limite para proteger qualidade no modelo menor.
-            trecho = conteudo[:900]
-            bloco = f"[Doc {idx} | Score {score:.0%}]\n{trecho}"
-
-            if total_chars + len(bloco) > RAG_MAX_CHARS:
-                break
-
-            blocos.append(bloco)
-            total_chars += len(bloco)
-
-        return "\n\n".join(blocos)
-
-    def _executar_ferramenta_por_intencao(self, intencao: IntencaoAnalisada, pergunta: str) -> str | None:
+    def _executar_ferramenta_por_intencao(
+        self, intencao: IntencaoAnalisada, pergunta: str
+    ) -> str | None:
         """
         Executa ferramenta baseado na análise de intenção da LLM.
-        A LLM já entendeu semanticamente o que o usuário quer — não precisa de keywords.
+        A LLM já entendeu semanticamente o que o usuário quer.
         """
         if not intencao.ferramenta:
             return None
@@ -319,7 +384,6 @@ class SistemaAgentes:
         if intencao.ferramenta == "data_hora":
             local = params.get("local", "")
             if local:
-                # Tenta resolver timezone pelo nome do local
                 timezone = _extrair_local_hora(f"hora em {local}")
                 return obter_data_hora(timezone)
             return obter_data_hora()
@@ -330,7 +394,6 @@ class SistemaAgentes:
                 resultado = calcular(expressao)
                 if resultado:
                     return resultado
-            # Fallback: tenta extrair expressão da pergunta original
             return None
 
         if intencao.ferramenta == "saudacao":
@@ -359,9 +422,13 @@ class SistemaAgentes:
 
         return None
 
+    # ══════════════════════════════════════════════════════════════
+    # HELPERS
+    # ══════════════════════════════════════════════════════════════
+
     @staticmethod
     def _deve_promover_para_profundo(pergunta: str, resposta: str) -> bool:
-        """Promove para nível profundo quando a saída rápida é fraca para a pergunta."""
+        """Promove para nível profundo quando a saída rápida é fraca."""
         if not resposta:
             return True
 
@@ -389,6 +456,43 @@ class SistemaAgentes:
 
         return False
 
+    def _system_prompt_com_rag(self, base_prompt: str, tem_rag: bool) -> str:
+        """Aplica instruções de grounding quando houver contexto recuperado."""
+        if not tem_rag:
+            return base_prompt
+        complemento = (
+            "\n\n## REGRAS DE GROUNDING (OBRIGATÓRIAS):\n"
+            "1. Responda EXCLUSIVAMENTE com base no contexto fornecido abaixo.\n"
+            "2. Se o contexto não contém a informação necessária, diga explicitamente: "
+            "'Não encontrei essa informação nas fontes consultadas.'\n"
+            "3. NUNCA invente dados, estatísticas, datas ou fatos não presentes no contexto.\n"
+            "4. Cite a fonte quando possível (URL ou título do documento).\n"
+            "5. Se houver conflito entre fontes, mencione ambas perspectivas.\n"
+            "6. Prefira responder com bullet points para clareza."
+        )
+        return f"{base_prompt}{complemento}"
+
+    def _construir_contexto_rag(self, docs: list[dict]) -> str:
+        """Compacta o contexto RAG para reduzir ruído sem perder cobertura."""
+        blocos: list[str] = []
+        total_chars = 0
+        for idx, doc in enumerate(docs, 1):
+            score = doc.get("score_hibrido", doc.get("similaridade", 0.0))
+            conteudo = doc.get("conteudo", "").strip()
+            if not conteudo:
+                continue
+
+            trecho = conteudo[:900]
+            bloco = f"[Doc {idx} | Score {score:.0%}]\n{trecho}"
+
+            if total_chars + len(bloco) > RAG_MAX_CHARS:
+                break
+
+            blocos.append(bloco)
+            total_chars += len(bloco)
+
+        return "\n\n".join(blocos)
+
     def _montar_contexto(
         self, n_msgs: int, contexto_busca: str, pergunta: str, contexto_rag: str = ""
     ) -> list[dict]:
@@ -408,13 +512,13 @@ class SistemaAgentes:
                 "content": f"Conhecimento relevante da base:\n{contexto_rag}"
             })
 
-        # Resultados web como system message — garante que modelos pequenos não ignorem
         if contexto_busca:
             mensagens.append({
                 "role": "system",
                 "content": (
                     "DADOS ATUAIS OBTIDOS DA WEB — use exclusivamente estes dados para responder. "
-                    "NUNCA diga que não tem acesso a informações em tempo real quando estes dados estiverem presentes.\n\n"
+                    "NUNCA diga que não tem acesso a informações em tempo real quando estes dados "
+                    "estiverem presentes.\n\n"
                     f"{contexto_busca}"
                 ),
             })
@@ -423,7 +527,6 @@ class SistemaAgentes:
         for msg in historico:
             mensagens.append({"role": msg["role"], "content": msg["content"]})
 
-        # Para modelos pequenos: inclui dados também na mensagem user para garantir grounding
         if contexto_busca:
             conteudo = (
                 f"{pergunta}\n\n"
@@ -434,12 +537,14 @@ class SistemaAgentes:
             conteudo = pergunta
 
         mensagens.append({"role": "user", "content": conteudo})
-
         return mensagens
+
+    # ══════════════════════════════════════════════════════════════
+    # PERSISTÊNCIA
+    # ══════════════════════════════════════════════════════════════
 
     def _salvar(self, pergunta: str, resposta: str, agente: str, nivel: int, inicio: float):
         """Salva em todas as camadas de memória (ignora respostas de erro)."""
-        # P0: Não cachear respostas de erro do LLM
         if resposta.startswith("Erro ao chamar modelo") or resposta.startswith("Erro"):
             self.memoria.salvar_mensagem("user", pergunta)
             self._salvar_metrica(agente, nivel, inicio, fonte="erro")
@@ -465,6 +570,10 @@ class SistemaAgentes:
             resumo = resumir_conversa(modelo, mensagens)
             if resumo:
                 self.memoria.salvar_resumo(resumo)
+
+    # ══════════════════════════════════════════════════════════════
+    # INTERFACE PÚBLICA
+    # ══════════════════════════════════════════════════════════════
 
     def forcar_nivel(self, nivel: int):
         """Força nível para a próxima pergunta."""
