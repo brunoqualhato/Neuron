@@ -616,8 +616,12 @@ class SistemaAgentes:
 
         self.memoria.salvar_mensagem("user", pergunta)
         self.memoria.salvar_mensagem("assistant", resposta, agente, nivel)
-        cache_key = f"{agente}:{pergunta}"
-        self.cache.salvar(cache_key, resposta, agente)
+        # Cacheia apenas respostas DETERMINISTICAS (nivel 1: ferramentas como
+        # calculo/data). Respostas conversacionais (nivel 2/3) dependem do historico:
+        # cachea-las por (agente, pergunta) faria "qual meu nome?" retornar uma
+        # resposta velha, ignorando o contexto da conversa.
+        if nivel == 1:
+            self.cache.salvar(f"{agente}:{pergunta}", resposta, agente)
         self.semantica.adicionar(pergunta, resposta, agente)
 
     def _salvar_metrica(self, agente: str, nivel: int, inicio: float,
