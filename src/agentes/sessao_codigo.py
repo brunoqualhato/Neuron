@@ -145,6 +145,22 @@ class SessaoCodigo:
                     partes.append(bloco)
                     chars_usados += len(bloco)
 
+        # Se é o ponto de entrada, lista todos os módulos disponíveis
+        eh_ponto_entrada = step.arquivo and step.arquivo.split(".")[0] in (
+            "main", "index", "app", "server", "cli"
+        )
+        if eh_ponto_entrada and self.scratchpad:
+            modulos_existentes = [
+                f for f in self.scratchpad.keys()
+                if f != step.arquivo and not f.endswith((".md", ".txt", ".json"))
+            ]
+            if modulos_existentes:
+                partes.append(
+                    f"MÓDULOS DISPONÍVEIS PARA IMPORTAR: {', '.join(modulos_existentes)}\n"
+                    f"IMPORTANTE: Este é o PONTO DE ENTRADA. Deve importar e usar os módulos acima "
+                    f"para criar uma interface interativa (CLI com menu ou servidor web)."
+                )
+
         partes.append(f"STEP ({step.numero}/{len(self.plano)}): {step.descricao}")
         if step.arquivo:
             partes.append(f"GERE: {step.arquivo}")
@@ -445,32 +461,79 @@ def editar_arquivo(sessao: SessaoCodigo, arquivo: str, instrucao: str) -> str:
 # [10] CHAIN-OF-THOUGHT NO PLANEJAMENTO
 # ══════════════════════════════════════════════════════════════
 
-_PROMPT_COT_1 = """Liste as funcionalidades necessárias para: {objetivo}
+_PROMPT_COT_1 = """Analise o projeto solicitado e liste as funcionalidades necessárias para: {objetivo}
 
-Responda como bullet points. Máximo 10 itens. Seja específico e técnico."""
+REGRAS OBRIGATÓRIAS:
+- O projeto DEVE ter um ponto de entrada executável (main.py, index.js, app.py, etc.)
+- O projeto DEVE ter interface interativa: CLI com menu/readline, ou servidor web com endpoints testáveis, ou GUI
+- O projeto DEVE funcionar ao rodar (python main.py, node index.js, etc.) sem configuração extra
+- Inclua: arquivo de configuração/dependências (requirements.txt, package.json), README com instruções de uso
+- Se for CLI: use menus interativos, prompts de input, feedback visual
+- Se for web: inclua ao menos uma rota funcional testável com curl ou navegador
+- Se não especificado, use Python com CLI interativa (rich ou input/print)
+
+Responda como bullet points. Máximo 10 itens. Seja específico e técnico.
+O PRIMEIRO item deve ser sempre o ponto de entrada principal com interface interativa.
+O ÚLTIMO item deve ser o README.md com instruções de execução."""
 
 _PROMPT_COT_2 = """Com base nestas funcionalidades:
 {funcionalidades}
 
 Organize em arquivos de código. Cada arquivo = 1 step.
+REGRAS:
+- O PRIMEIRO step DEVE ser o arquivo de dependências (requirements.txt ou package.json)
+- O SEGUNDO step DEVE ser os módulos/classes de lógica de negócio
+- O PENÚLTIMO step DEVE ser o ponto de entrada principal (main.py/index.js/app.py) que importa os módulos e oferece interface interativa
+- O ÚLTIMO step DEVE ser README.md com instruções claras de execução
+- Todos os arquivos devem se conectar via imports
+- O ponto de entrada deve ser EXECUTÁVEL e INTERATIVO (menu, prompts, servidor)
+
 Responda APENAS com JSON:
 {{"steps": [{{"descricao": "...", "arquivo": "nome.ext", "dependencias": []}}]}}"""
 
-_PROMPT_PLANEJAR_SIMPLES = """Decomponha em steps (JSON):
-{{"steps": [{{"descricao":"...", "arquivo":"nome.py", "dependencias":[]}}]}}
-Máx 8 steps. Ordene por dependência."""
+_PROMPT_PLANEJAR_SIMPLES = """Decomponha em steps para criar um projeto FUNCIONAL e EXECUTÁVEL (JSON):
+{{"steps": [{{"descricao":"...", "arquivo":"nome.ext", "dependencias":[]}}]}}
+
+OBRIGATÓRIO:
+- Primeiro step: arquivo de dependências (requirements.txt ou package.json)
+- Steps intermediários: módulos de lógica
+- Penúltimo step: ponto de entrada com interface interativa (CLI menu ou servidor web)
+- Último step: README.md com instruções de execução
+
+Máx 8 steps. Ordene por dependência. O projeto deve funcionar ao rodar o ponto de entrada."""
 
 
 # ══════════════════════════════════════════════════════════════
 # PROMPTS DO LOOP
 # ══════════════════════════════════════════════════════════════
 
-_PROMPT_CODER = """Você é um programador expert. Gere APENAS código do arquivo pedido.
-REGRAS: código completo, imports inclusos, sem explicações, decisões simples, exemplo de uso, arquivo .md explicativo e caso o usuario não defina a stack, utilize Python."""
+_PROMPT_CODER = """Você é um programador expert que cria projetos FUNCIONAIS e EXECUTÁVEIS.
 
-_PROMPT_VALIDAR = """O código atende ao objetivo? JSON: {"valido":true/false,"problemas":[],"decisoes":[]}"""
+REGRAS OBRIGATÓRIAS:
+1. Gere APENAS o código do arquivo pedido — completo e funcional
+2. Inclua TODOS os imports necessários no topo
+3. Se for o ponto de entrada (main.py, index.js, app.py): DEVE ter interface interativa
+   - Para CLI: use loop com menu de opções, input() do usuário, feedback visual
+   - Para web: servidor que suba e responda em localhost
+4. Se for módulo: exporte classes/funções que o ponto de entrada vai importar
+5. Se for requirements.txt/package.json: liste APENAS dependências realmente usadas
+6. Se for README.md: inclua instruções EXATAS de como instalar e executar
+7. Código deve funcionar ao ser executado — sem TODOs, sem stubs, sem "implementar depois"
+8. Use a stack definida pelo usuário. Se não definida, use Python com CLI interativa
+9. NÃO inclua explicações fora do código — apenas comentários inline quando necessário
+10. O projeto deve ser VIVO: o usuário roda e interage imediatamente"""
 
-_PROMPT_RETRY = """PROBLEMAS: {problemas}\n\nGere o código corrigido COMPLETO:"""
+_PROMPT_VALIDAR = """Avalie se o código atende ao objetivo e é EXECUTÁVEL.
+Critérios: código completo (sem TODOs/stubs), imports corretos, interface funcional (se for ponto de entrada).
+Responda JSON: {"valido":true/false,"problemas":[],"decisoes":[]}"""
+
+_PROMPT_RETRY = """PROBLEMAS ENCONTRADOS:
+{problemas}
+
+Gere o código COMPLETO corrigido. Lembre-se:
+- O código deve ser executável sem erros
+- Se for ponto de entrada: deve ter interface interativa funcional
+- Sem TODOs, sem stubs, sem placeholders"""
 
 
 # ══════════════════════════════════════════════════════════════
