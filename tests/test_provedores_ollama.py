@@ -1,6 +1,7 @@
-from unittest.mock import patch, MagicMock
-from src.provedores.ollama_provider import OllamaProvider
+from unittest.mock import MagicMock, patch
+
 from src.provedores.base import RespostaLLM
+from src.provedores.ollama_provider import OllamaProvider
 
 
 @patch("src.provedores.ollama_provider.ollama")
