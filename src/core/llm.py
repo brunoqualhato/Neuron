@@ -1,11 +1,17 @@
 """
-Fachada de LLM. Delega ao provider resolvido pelo registry (default ollama).
+Fachada de LLM. Delega ao provider resolvido pelo registry (default ollama)
+e aplica o tuning de hardware fraco (num_ctx por nivel, keep_alive) ao delegar.
 Mantém as assinaturas públicas usadas por executor.py e main.py.
 """
 from __future__ import annotations
 
 from rich.console import Console
 
+from src.core.config import (
+    KEEP_ALIVE_EFEMERO,
+    KEEP_ALIVE_PRINCIPAL,
+    NUM_CTX_AUXILIAR,
+)
 from src.provedores import registry
 
 console = Console()
@@ -21,13 +27,13 @@ def chamar_llm(
     stream: bool = True,
     max_tokens: int = 2048,
     temperatura: float = 0.7,
-    num_ctx: Optional[int] = None,
-    keep_alive: Optional[str] = KEEP_ALIVE_PRINCIPAL,
-    on_token: Optional[Callable[[str], None]] = None,
+    num_ctx: int | None = None,
+    keep_alive: str | None = KEEP_ALIVE_PRINCIPAL,
 ) -> dict:
     r = _provider.chat(
         modelo, system_prompt, mensagens,
         stream=stream, max_tokens=max_tokens, temperatura=temperatura,
+        num_ctx=num_ctx, keep_alive=keep_alive,
     )
     return {
         "resposta": r.resposta,
@@ -38,9 +44,11 @@ def chamar_llm(
 
 
 def chamar_coordenador(pergunta: str, modelo: str, system_prompt: str) -> str:
+    # Modelo auxiliar: janela mínima + keep_alive efêmero (não ocupa RAM).
     r = _provider.chat(
         modelo, system_prompt, [{"role": "user", "content": pergunta}],
         stream=False, max_tokens=20, temperatura=0.1,
+        num_ctx=NUM_CTX_AUXILIAR, keep_alive=KEEP_ALIVE_EFEMERO,
     )
     texto = r.resposta.strip().lower()
     return texto or "analista"
@@ -56,6 +64,7 @@ def resumir_conversa(modelo: str, mensagens: list[dict]) -> str:
         ),
         [{"role": "user", "content": texto_conversa}],
         stream=False, max_tokens=100, temperatura=0.3,
+        num_ctx=NUM_CTX_AUXILIAR, keep_alive=KEEP_ALIVE_EFEMERO,
     )
     return r.resposta
 
