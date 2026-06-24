@@ -22,13 +22,19 @@ class StdioTransport:
             bufsize=1,
         )
 
-    def request(self, payload: dict) -> dict:
+    def _write(self, payload: dict) -> None:
         if self._proc is None:
             raise RuntimeError("Transport nao iniciado. Chame start().")
         if self._proc.poll() is not None:
             raise RuntimeError("Servidor MCP encerrou antes da requisição.")
         self._proc.stdin.write(json.dumps(payload) + "\n")
         self._proc.stdin.flush()
+
+    def notify(self, payload: dict) -> None:
+        self._write(payload)
+
+    def request(self, payload: dict) -> dict:
+        self._write(payload)
         pode_aguardar = True
         try:
             self._proc.stdout.fileno()

@@ -10,12 +10,21 @@ class MCPError(Exception):
 
 class Transport(Protocol):
     def request(self, payload: dict) -> dict: ...
+    def notify(self, payload: dict) -> None: ...
 
 
 class MCPClient:
-    def __init__(self, transport: Transport) -> None:
+    def __init__(
+        self,
+        transport: Transport,
+        *,
+        client_name: str = "potato-claw",
+        client_version: str = "1.0.0",
+    ) -> None:
         self._transport = transport
         self._id = 0
+        self._client_name = client_name
+        self._client_version = client_version
 
     def _rpc(self, metodo: str, params: dict | None = None) -> dict:
         self._id += 1
@@ -30,10 +39,29 @@ class MCPClient:
             raise MCPError(str(resp["error"]))
         return resp.get("result", {})
 
+    def _notify(self, metodo: str, params: dict | None = None) -> None:
+        payload = {
+            "jsonrpc": "2.0",
+            "method": metodo,
+        }
+        if params is not None:
+            payload["params"] = params
+        self._transport.notify(payload)
+
     def initialize(self) -> dict:
-        return self._rpc(
-            "initialize", {"protocolVersion": "2024-11-05", "capabilities": {}}
+        resultado = self._rpc(
+            "initialize",
+            {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {
+                    "name": self._client_name,
+                    "version": self._client_version,
+                },
+            },
         )
+        self._notify("notifications/initialized")
+        return resultado
 
     def list_tools(self) -> list[dict]:
         return self._rpc("tools/list").get("tools", [])

@@ -12,6 +12,9 @@ class FakeTransport:
         self.enviados.append(payload)
         return self.respostas[payload["method"]]
 
+    def notify(self, payload):
+        self.enviados.append(payload)
+
 
 def test_list_tools():
     t = FakeTransport({
@@ -40,3 +43,31 @@ def test_erro_rpc_levanta():
     })
     with pytest.raises(MCPError):
         MCPClient(t).list_tools()
+
+
+def test_initialize_completa_handshake():
+    t = FakeTransport({
+        "initialize": {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "fake", "version": "1.0"},
+            },
+        }
+    })
+
+    resultado = MCPClient(
+        t, client_name="teste", client_version="2.0"
+    ).initialize()
+
+    assert resultado["serverInfo"]["name"] == "fake"
+    assert t.enviados[0]["params"]["clientInfo"] == {
+        "name": "teste",
+        "version": "2.0",
+    }
+    assert t.enviados[1] == {
+        "jsonrpc": "2.0",
+        "method": "notifications/initialized",
+    }

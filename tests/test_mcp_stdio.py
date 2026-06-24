@@ -40,3 +40,13 @@ def test_request_detecta_eof():
         assert "sem enviar resposta" in str(exc)
     else:
         raise AssertionError("EOF deveria gerar erro")
+
+
+def test_notify_envia_sem_aguardar_resposta():
+    t = StdioTransport(["echo"])
+    t._proc = FakeProc({})
+
+    t.notify({"jsonrpc": "2.0", "method": "notifications/initialized"})
+
+    enviado = json.loads(t._proc.stdin.getvalue().strip())
+    assert enviado["method"] == "notifications/initialized"
