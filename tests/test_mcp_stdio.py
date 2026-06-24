@@ -1,5 +1,6 @@
 import io
 import json
+from unittest.mock import patch
 
 from src.extensoes.mcp.stdio import StdioTransport
 
@@ -18,6 +19,15 @@ class FakeProc:
 
     def poll(self):
         return None
+
+
+@patch("src.extensoes.mcp.stdio.subprocess.Popen")
+def test_start_herda_stderr_sem_criar_pipe(mock_popen):
+    t = StdioTransport(["servidor-mcp"])
+
+    t.start()
+
+    assert mock_popen.call_args.kwargs["stderr"] is None
 
 
 def test_request_encoda_e_decoda():

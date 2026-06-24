@@ -17,7 +17,10 @@ class StdioTransport:
             self._comando,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            # Servidores MCP podem escrever logs livremente no stderr. Herdar
+            # o descritor do processo pai preserva esses logs e evita deadlock
+            # por encher um PIPE que o cliente não consome.
+            stderr=None,
             text=True,
             bufsize=1,
         )
