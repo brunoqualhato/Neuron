@@ -4,6 +4,7 @@ import pytest
 
 from src.ferramentas.resolver import (
     calcular,
+    executar_comando_local,
     executar_ferramentas,
     verificar_ferramenta_calculo,
     verificar_ferramenta_data,
@@ -105,3 +106,87 @@ class TestExecutarFerramentas:
     def test_sem_ferramenta_retorna_none(self):
         resultado = executar_ferramentas("explique o teorema de pitágoras detalhadamente")
         assert resultado is None
+
+
+class TestExecutarComandoLocal:
+    """Hardening da allowlist de execução de comandos locais."""
+
+    def test_comando_permitido_executa(self):
+        resultado = executar_comando_local("echo oi")
+        assert "oi" in resultado
+        assert "Exit code: 0" in resultado
+
+    def test_binario_fora_da_allowlist_bloqueado(self):
+        resultado = executar_comando_local("rm arquivo.txt")
+        assert "não está na lista de permitidos" in resultado
+
+    def test_binario_com_caminho_absoluto_bloqueado(self):
+        # '/tmp/cat' não pode passar como 'cat' e executar o binário do caminho.
+        resultado = executar_comando_local("/tmp/cat segredo.txt")
+        assert "sem caminho" in resultado
+
+    def test_node_eval_bloqueado(self):
+        resultado = executar_comando_local('node -e "process.exit(1)"')
+        assert "bloqueada por segurança" in resultado
+
+    def test_node_print_bloqueado(self):
+        resultado = executar_comando_local("node --eval=1")
+        assert "bloqueada por segurança" in resultado
+
+    def test_find_exec_bloqueado(self):
+        resultado = executar_comando_local("find . -name x -exec echo {} ;")
+        assert "bloqueada por segurança" in resultado
+
+    def test_find_delete_bloqueado(self):
+        resultado = executar_comando_local("find . -delete")
+        assert "bloqueada por segurança" in resultado
+
+    def test_sed_in_place_bloqueado(self):
+        resultado = executar_comando_local("sed -i s/a/b/ arquivo.txt")
+        assert "bloqueada por segurança" in resultado
+
+    def test_git_clone_bloqueado(self):
+        resultado = executar_comando_local("git clone https://exemplo.com/repo")
+        assert "bloqueado por segurança" in resultado
+
+    def test_git_clone_apos_opcao_global_bloqueado(self):
+        # subcomando após opção global não pode contornar a blocklist.
+        resultado = executar_comando_local("git -c core.pager=cat clone https://x/y")
+        assert "bloqueado por segurança" in resultado
+
+    def test_git_status_permitido(self):
+        # subcomando de leitura continua passando pela allowlist (executa de fato).
+        resultado = executar_comando_local("git status")
+        assert "Exit code" in resultado
+
+    def test_argumento_caminho_absoluto_bloqueado(self):
+        resultado = executar_comando_local("cat /etc/passwd")
+        assert "fora do projeto" in resultado
+
+    def test_argumento_caminho_em_flag_bloqueado(self):
+        # caminho absoluto embutido em flag (--file=/...) também é bloqueado.
+        resultado = executar_comando_local("grep --file=/etc/passwd x")
+        assert "fora do projeto" in resultado
+
+    def test_argumento_caminho_windows_bloqueado(self):
+        # unidade Windows com barra normal (sobrevive ao shlex POSIX).
+        resultado = executar_comando_local("cat C:/Windows/system32/drivers/etc/hosts")
+        assert "fora do projeto" in resultado
+
+    def test_argumento_traversal_bloqueado(self):
+        resultado = executar_comando_local("cat ../../etc/passwd")
+        assert "fora do projeto" in resultado
+
+    def test_argumento_home_bloqueado(self):
+        resultado = executar_comando_local("cat ~/.ssh/id_rsa")
+        assert "fora do projeto" in resultado
+
+    def test_flag_destrutiva_bloqueada(self):
+        resultado = executar_comando_local("git checkout --force main")
+        assert "destrutivas" in resultado
+
+    def test_argumento_relativo_no_projeto_permitido(self):
+        # caminho relativo dentro do projeto não é bloqueado pelas guardas.
+        resultado = executar_comando_local("ls src")
+        assert "não está na lista" not in resultado
+        assert "fora do projeto" not in resultado

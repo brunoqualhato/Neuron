@@ -117,10 +117,26 @@ COMANDOS_PERMITIDOS = {
 
 # Subcomandos perigosos mesmo em binários permitidos
 _SUBCMD_BLOQUEADOS = {
-    "git": {"push", "remote", "config"},
+    # clone/fetch/pull baixam código externo; am/apply/archive escrevem/leem
+    # fora do escopo; push/remote/config alteram o repo remoto/local.
+    "git": {
+        "push", "remote", "config", "clone", "fetch", "pull",
+        "am", "apply", "archive",
+    },
     "pip": {"install", "uninstall"},
     "pip3": {"install", "uninstall"},
     "npm": {"run", "exec", "install", "uninstall", "publish"},
+}
+
+# Flags que transformam um binário "de leitura" em execução de código ou
+# escrita arbitrária. Comparadas contra a forma base do argumento (antes de "=").
+_FLAGS_BLOQUEADAS_POR_BINARIO = {
+    # find -exec/-delete executa binários e apaga arquivos.
+    "find": {"-exec", "-execdir", "-delete", "-ok", "-okdir", "-fprint", "-fprintf", "-fls"},
+    # node -e/-p avalia JavaScript arbitrário (acesso a child_process, fs, etc).
+    "node": {"-e", "--eval", "-p", "--print"},
+    # sed -i reescreve arquivos no lugar.
+    "sed": {"-i", "--in-place"},
 }
 
 _PREFIXOS_CONFIRMACAO = ("confirmar:", "confirmo:", "execute:")
@@ -210,6 +226,26 @@ def criar_arquivo(caminho: str, conteudo: str) -> str:
         return f"Erro ao criar arquivo: {e}"
 
 
+def _arg_referencia_caminho_externo(arg: str) -> bool:
+    """True se o argumento aponta para fora do projeto: caminho absoluto, home,
+    unidade Windows ou traversal. Cobre também o caminho embutido em flag
+    (ex.: ``--file=/etc/passwd``), checando a parte após o primeiro '='."""
+    candidatos = [arg]
+    if "=" in arg:
+        candidatos.append(arg.split("=", 1)[1])
+    for parte in candidatos:
+        p = parte.strip().strip('"').strip("'")
+        if not p:
+            continue
+        if p.startswith("/") or p.startswith("~") or p.startswith("\\"):
+            return True
+        if re.match(r"[A-Za-z]:[\\/]", p):  # unidade Windows (C:\ ou C:/)
+            return True
+        if ".." in p.replace("\\", "/").split("/"):
+            return True
+    return False
+
+
 def executar_comando_local(comando: str) -> str:
     """Executa comando shell no diretório do projeto com allowlist."""
     comando_limpo = comando.strip()
@@ -223,7 +259,12 @@ def executar_comando_local(comando: str) -> str:
     if not partes:
         return "Comando vazio."
 
-    binario = Path(partes[0]).name  # pega apenas o nome, sem path absoluto
+    # O binário não pode vir com caminho: 'Path(...).name' descartaria o diretório
+    # e '/tmp/cat' passaria como 'cat', executando o binário pelo caminho absoluto.
+    if "/" in partes[0] or "\\" in partes[0]:
+        return "Erro: informe apenas o nome do binário, sem caminho."
+
+    binario = partes[0]
 
     if binario not in COMANDOS_PERMITIDOS:
         return (
@@ -231,16 +272,32 @@ def executar_comando_local(comando: str) -> str:
             f"Permitidos: {', '.join(sorted(COMANDOS_PERMITIDOS))}"
         )
 
-    # Bloqueio de subcomandos perigosos
-    if binario in _SUBCMD_BLOQUEADOS and len(partes) > 1:
-        subcmd = partes[1].lower()
-        if subcmd in _SUBCMD_BLOQUEADOS[binario]:
-            return f"Subcomando '{binario} {subcmd}' bloqueado por segurança."
+    # Bloqueio de subcomandos perigosos. O subcomando pode vir após opções
+    # globais (ex.: 'git -c core.pager=cat clone'), então checamos todos os
+    # tokens que não são flags, e não apenas partes[1].
+    if binario in _SUBCMD_BLOQUEADOS:
+        for arg in partes[1:]:
+            if not arg.startswith("-") and arg.lower() in _SUBCMD_BLOQUEADOS[binario]:
+                return f"Subcomando '{arg}' de '{binario}' bloqueado por segurança."
 
-    # Bloqueio de flags perigosas mesmo em comandos permitidos
+    # Bloqueio de flags que executam código ou escrevem arquivos, por binário.
+    # Compara a forma base (antes de '=') para pegar '--eval=...' e similares.
+    flags_do_binario = _FLAGS_BLOQUEADAS_POR_BINARIO.get(binario)
+    if flags_do_binario:
+        for arg in partes[1:]:
+            if arg.split("=", 1)[0] in flags_do_binario:
+                return f"Flag '{arg}' bloqueada por segurança para '{binario}'."
+
+    # Bloqueio de flags destrutivas mesmo em comandos permitidos
     flags_perigosas = ["--force", "-rf", "--hard", "--no-preserve-root"]
     if any(f in partes for f in flags_perigosas):
         return "Flags destrutivas bloqueadas por segurança."
+
+    # Argumentos não podem apontar para fora do projeto: caminho absoluto, home,
+    # unidade Windows ou traversal, inclusive embutidos em flag (--file=...).
+    for arg in partes[1:]:
+        if _arg_referencia_caminho_externo(arg):
+            return "Erro: argumentos não podem referenciar caminhos fora do projeto."
 
     try:
         proc = subprocess.run(
