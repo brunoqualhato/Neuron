@@ -49,11 +49,29 @@ async def servir(processar: Callable[[str, str], str] | None = None) -> None:
     nomes = ", ".join(c.nome for c in canais)
     console.print(f"[green]🥔 potato-claw no ar[/green] - canais: {nomes}. Ctrl+C para parar.")
 
-    tarefas = [asyncio.create_task(rt.rodar())]
-    tarefas += [asyncio.create_task(c.start()) for c in canais]
+    tarefas = {
+        asyncio.create_task(rt.rodar(), name="runtime"),
+        *(
+            asyncio.create_task(c.start(), name=f"canal:{c.nome}")
+            for c in canais
+        ),
+    }
     try:
-        await asyncio.gather(*tarefas)
+        concluidas, _ = await asyncio.wait(
+            tarefas, return_when=asyncio.FIRST_COMPLETED
+        )
+        # Um canal que encerra (por exemplo, token fatal do Telegram) torna o
+        # servidor incapaz de receber mensagens. Encerra o restante da stack,
+        # propagando exceções reais para o supervisor reiniciar o processo.
+        for tarefa in concluidas:
+            erro = tarefa.exception()
+            if erro is not None:
+                raise erro
     except (asyncio.CancelledError, KeyboardInterrupt):
         pass
     finally:
+        for tarefa in tarefas:
+            if not tarefa.done():
+                tarefa.cancel()
+        await asyncio.gather(*tarefas, return_exceptions=True)
         await mgr.parar_todos()
