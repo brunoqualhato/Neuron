@@ -207,6 +207,10 @@ class SessaoCodigo:
         if step.arquivo:
             partes.append(f"GERE: {step.arquivo}")
 
+            # Para README.md: injeta resumo completo do projeto gerado
+            if step.arquivo.lower() == "readme.md" and self.scratchpad:
+                partes.append(self._contexto_readme())
+
             # Reforça o formato esperado para evitar confusão de conteúdo
             formato_hints = {
                 ".txt": (
@@ -223,7 +227,10 @@ class SessaoCodigo:
                 ),
                 ".js": "FORMATO: JavaScript válido. NÃO coloque Python aqui.",
                 ".json": "FORMATO: JSON válido. NÃO coloque código aqui.",
-                ".md": "FORMATO: Markdown com instruções reais de instalação e execução do projeto.",
+                ".md": (
+                    "FORMATO: Markdown COMPLETO com título, descrição, instalação, execução, "
+                    "funcionalidades e estrutura do projeto. BASEIE-SE nos arquivos reais listados acima."
+                ),
             }
             for ext, hint in formato_hints.items():
                 if step.arquivo.endswith(ext):
@@ -231,6 +238,81 @@ class SessaoCodigo:
                     break
 
         return "\n\n".join(partes)
+
+    def _contexto_readme(self) -> str:
+        """Gera contexto rico para o README baseado nos arquivos reais do projeto."""
+        linhas = ["═══ INFORMAÇÕES DO PROJETO PARA O README ═══"]
+        linhas.append(f"OBJETIVO: {self.objetivo}")
+
+        if self.decisoes:
+            stack = next((d for d in self.decisoes if "Stack:" in d), None)
+            if stack:
+                linhas.append(f"STACK: {stack}")
+
+        linhas.append(f"\nARQUIVOS GERADOS ({len(self.scratchpad)}):")
+        for arquivo, conteudo in self.scratchpad.items():
+            if arquivo.lower() == "readme.md":
+                continue
+            # Extrai imports e estrutura para o README saber o que descrever
+            resumo = self._resumir_arquivo(arquivo, conteudo)
+            linhas.append(f"  • {arquivo}: {resumo}")
+
+        # Identifica dependências para instrução de instalação
+        for f in ("requirements.txt", "package.json"):
+            if f in self.scratchpad:
+                linhas.append(f"\nDEPENDÊNCIAS ({f}):\n{self.scratchpad[f][:500]}")
+                break
+
+        # Identifica ponto de entrada
+        pontos = {"main.py", "app.py", "index.js", "server.js", "src/index.ts"}
+        entrada = next((f for f in self.scratchpad if f in pontos), None)
+        if entrada:
+            linhas.append(f"\nPONTO DE ENTRADA: {entrada}")
+            # Extrai porta se for web
+            codigo_entrada = self.scratchpad[entrada]
+            if "port" in codigo_entrada.lower() or "5000" in codigo_entrada or "3000" in codigo_entrada:
+                linhas.append("TIPO: Servidor web (mencione URL no README)")
+            else:
+                linhas.append("TIPO: CLI interativa (mencione comando para rodar)")
+
+        linhas.append(
+            "\nINSTRUÇÕES PARA O README:"
+            "\n- Título: nome descritivo do projeto"
+            "\n- Descrição: 1-2 frases sobre o que faz"
+            "\n- Instalação: comandos EXATOS (pip install -r requirements.txt / npm install)"
+            "\n- Execução: comando EXATO para rodar (python main.py / python app.py / node index.js)"
+            "\n- Se web: URL para acessar (http://localhost:PORTA)"
+            "\n- Funcionalidades: lista com bullet points"
+            "\n- Estrutura: tabela arquivo → responsabilidade"
+        )
+        return "\n".join(linhas)
+
+    @staticmethod
+    def _resumir_arquivo(arquivo: str, conteudo: str) -> str:
+        """Gera resumo de 1 linha do que o arquivo faz."""
+        if arquivo == "requirements.txt":
+            deps = [
+                linha.split(">=")[0].split("==")[0].strip()
+                for linha in conteudo.split("\n") if linha.strip() and not linha.startswith("#")
+            ]
+            return f"Dependências: {', '.join(deps[:5])}"
+        if arquivo.endswith(".py"):
+            classes = re.findall(r"class\s+(\w+)", conteudo)
+            funcs = re.findall(r"^def\s+(\w+)", conteudo, re.MULTILINE)
+            partes = []
+            if classes:
+                partes.append(f"Classes: {', '.join(classes[:4])}")
+            if funcs:
+                partes.append(f"Funções: {', '.join(funcs[:4])}")
+            return " | ".join(partes) if partes else "Módulo Python"
+        if arquivo.endswith(".html"):
+            return "Template HTML" + (" (Jinja2)" if "{{" in conteudo else "")
+        if arquivo.endswith(".css"):
+            return "Estilos CSS"
+        if arquivo.endswith(".js"):
+            funcs = re.findall(r"function\s+(\w+)", conteudo)
+            return f"Funções: {', '.join(funcs[:4])}" if funcs else "Módulo JavaScript"
+        return "Arquivo auxiliar"
 
     def registrar_resultado(self, step: StepPlano, codigo: str):
         step.concluido = True
@@ -642,66 +724,99 @@ Máx 8 steps. Ordene por dependência. O projeto deve funcionar ao rodar o ponto
 # PROMPTS DO LOOP
 # ══════════════════════════════════════════════════════════════
 
-_PROMPT_CODER = """Você é um programador expert que cria projetos FUNCIONAIS e EXECUTÁVEIS.
+_PROMPT_CODER = """Você é um programador sênior criando um projeto COMPLETO e FUNCIONAL.
+Seu código será executado imediatamente pelo usuário — não pode falhar.
 
-REGRAS OBRIGATÓRIAS:
-1. Gere APENAS o código do arquivo pedido — completo e funcional
-2. Inclua TODOS os imports necessários no topo, incluindo imports de OUTROS MÓDULOS DO PROJETO
-   - Se o step indica dependências (models.py, storage.py, etc.), DEVE importar deles
-   - Exemplo: "from models import Contato, ContatoManager" se models.py define essas classes
-3. Se for o ponto de entrada (main.py, index.js, app.py): DEVE ter interface interativa
-   - Para CLI: use loop com menu de opções, input() do usuário, feedback visual
-   - Para web/site: servidor Flask/Express com rotas, templates HTML, CRUD funcional
-4. Se for módulo auxiliar (storage, services): DEVE importar os modelos do projeto
-   - Exemplo: storage.py que usa Contato DEVE ter "from models import Contato"
-5. INTEGRAÇÃO ENTRE MÓDULOS É OBRIGATÓRIA:
-   - O ponto de entrada DEVE usar os módulos de negócio (models) E de persistência (storage) juntos
-   - O storage DEVE salvar/carregar os dados do manager — ambos devem operar sobre a MESMA lista
-   - NÃO crie dois sistemas paralelos desconectados (ex: Manager em memória + Storage separado)
-   - O fluxo correto: ponto de entrada → usa manager → manager usa storage internamente
-6. Se for requirements.txt/package.json: liste APENAS dependências realmente usadas no código
-7. Se for README.md: inclua instruções EXATAS de como instalar e executar
-8. Código deve funcionar ao ser executado — sem TODOs, sem stubs, sem "implementar depois"
-9. Use a stack definida nas DECISÕES do projeto. Se não definida, use Python com CLI interativa
-10. O projeto deve ser VIVO: o usuário roda e interage imediatamente
-11. Trate inputs opcionais corretamente: string vazia ("") significa "manter valor atual", não substituir
-12. NÃO inclua explicações fora do código — apenas comentários inline quando necessário
+═══ REGRAS DE GERAÇÃO DE CÓDIGO ═══
 
-FORMATO DO CONTEÚDO POR TIPO DE ARQUIVO (CRÍTICO — NÃO MISTURE):
-- requirements.txt → APENAS nomes de pacotes, um por linha. Ex: flask>=3.0
-- package.json → APENAS JSON válido com dependências
-- *.py → APENAS código Python válido
-- *.js → APENAS código JavaScript válido
-- *.html → APENAS HTML válido (pode incluir Jinja2 se for template Flask)
-- *.css → APENAS regras CSS válidas (seletores, propriedades, valores)
-- README.md → APENAS Markdown com instruções de uso
+1. COMPLETUDE ABSOLUTA:
+   - Gere APENAS o código do arquivo pedido — 100% funcional, sem TODOs, sem stubs, sem "pass"
+   - Todo método deve ter implementação REAL com lógica funcional
+   - Inclua tratamento de erros (try/except, validações de input)
+   - Inclua valores default sensatos quando aplicável
 
-NUNCA coloque HTML dentro de um .txt, NUNCA coloque Python dentro de um .css, NUNCA coloque CSS dentro de um .py."""
+2. INTEGRAÇÃO ENTRE MÓDULOS (CRÍTICO):
+   - Leia atentamente o contexto — ele mostra os módulos já criados
+   - IMPORTE classes e funções dos módulos anteriores (from models import X, from storage import Y)
+   - O fluxo de dados DEVE ser conectado: entrada → lógica de negócio → persistência → saída
+   - NÃO crie variáveis/listas isoladas que duplicam o que já existe nos outros módulos
+   - Se models.py define uma classe Contato, use-a — não crie um dicionário avulso
 
-_PROMPT_VALIDAR = """Avalie se o código atende ao objetivo e é EXECUTÁVEL.
+3. PONTOS DE ENTRADA — DEVEM SER INTERATIVOS E COMPLETOS:
+   Para CLI (main.py):
+   - Loop principal com menu numerado: while True + input("Opção: ")
+   - TODAS as opções do CRUD implementadas (adicionar, listar, buscar, editar, remover)
+   - Feedback visual em cada operação: "✅ Adicionado!", "❌ Não encontrado"
+   - Opção 0 para sair com mensagem de despedida
+   - Tratamento de input inválido (try/except ValueError, opção inexistente)
 
-Critérios (todos devem ser verdadeiros):
-1. Código completo (sem TODOs/stubs/pass vazio)
-2. Imports corretos — inclui imports de outros módulos do PROJETO (não só stdlib)
-3. Interface funcional — se for ponto de entrada: CLI com menu OU servidor web com rotas
-4. Integração — se usa dados de outros módulos, deve importar E usar as classes/funções deles
-5. Consistência — se é storage/persistência, deve importar os modelos do projeto (ex: from models import ...)
-6. requirements.txt/package.json — lista APENAS o que é realmente importado no código
+   Para Web/Flask (app.py):
+   - Servidor Flask com app.run(debug=True, port=5000)
+   - Rotas para TODAS as operações CRUD: GET /, POST /add, POST /edit, POST /delete
+   - render_template para páginas HTML
+   - Mensagens flash ou redirect com feedback
+
+   Para API/FastAPI (app.py):
+   - Endpoints RESTful: GET /items, GET /items/{id}, POST /items, PUT /items/{id}, DELETE /items/{id}
+   - Schemas Pydantic para request/response
+   - Status codes corretos (201, 404, 204)
+   - uvicorn.run no if __name__
+
+4. PERSISTÊNCIA — DADOS DEVEM SOBREVIVER AO RESTART:
+   - Use JSON file (json.load/dump) ou SQLite (sqlite3) — NUNCA apenas lista em memória
+   - Função carregar(): lê do disco no startup
+   - Função salvar(): escreve no disco após cada operação mutável
+   - Crie o arquivo de dados automaticamente se não existir
+   - O ponto de entrada DEVE chamar carregar() no início e salvar() após cada mudança
+
+5. README.md — DEVE SER ÚTIL E REAL:
+   - Título e descrição de 1 linha do que o projeto faz
+   - Seção "Instalação" com comandos exatos (pip install -r requirements.txt)
+   - Seção "Execução" com o comando exato para rodar (python main.py / python app.py)
+   - Se é web: mencione a URL (http://localhost:5000)
+   - Seção "Funcionalidades" com bullet points do que faz
+   - Seção "Estrutura" listando arquivos e suas responsabilidades
+   - BASEIE-SE NOS ARQUIVOS REAIS DO PROJETO (você os vê no contexto)
+
+6. FORMATO DO CONTEÚDO POR TIPO DE ARQUIVO (NÃO MISTURE — CRÍTICO):
+   - requirements.txt → Um pacote por linha: flask>=3.0 (NUNCA coloque HTML ou Python aqui)
+   - *.py → Código Python válido com imports, classes, funções
+   - *.html → HTML com DOCTYPE, pode usar Jinja2 {{ }} para templates Flask
+   - *.css → Apenas regras CSS (seletores { prop: valor; })
+   - *.js → JavaScript válido
+   - *.json → JSON válido
+
+7. QUALIDADE DO CÓDIGO:
+   - Nomes de variáveis descritivos em português ou inglês (consistente com o projeto)
+   - Docstrings nas classes e funções principais
+   - Comentários em seções complexas
+   - Formatação limpa e consistente"""
+
+_PROMPT_VALIDAR = """Avalie se o código é EXECUTÁVEL e COMPLETO para o objetivo.
+
+Critérios — TODOS devem ser verdadeiros para "valido":true:
+1. Código completo: sem TODOs, sem "pass" vazio, sem stubs, sem "implementar depois"
+2. Imports corretos: importa módulos DO PROJETO (from models import X), não apenas stdlib
+3. Interface funcional: ponto de entrada tem loop/servidor com TODAS as operações
+4. Integração real: usa classes/funções dos outros módulos, não duplica lógica
+5. Persistência conectada: se há storage, o ponto de entrada usa-o para salvar/carregar
+6. Formato correto: requirements.txt só tem pacotes, CSS só tem CSS, HTML só tem HTML
 
 Responda JSON: {"valido":true/false,"problemas":[],"decisoes":[]}
 
-Exemplos de problemas comuns:
-- "storage.py usa Contato mas não importa de models" → inválido
-- "main.py cria Manager e Storage mas não os conecta" → inválido
-- "requirements.txt lista Flask mas nenhum arquivo usa Flask" → inválido"""
+Se inválido, liste problemas ESPECÍFICOS e ACIONÁVEIS (ex: "falta import de Storage em main.py")."""
 
-_PROMPT_RETRY = """PROBLEMAS ENCONTRADOS:
+_PROMPT_RETRY = """PROBLEMAS ENCONTRADOS NO CÓDIGO:
 {problemas}
 
-Gere o código COMPLETO corrigido. Lembre-se:
+CORRIJA TODOS os problemas e gere o código COMPLETO do arquivo.
+Não gere apenas o trecho corrigido — gere o ARQUIVO INTEIRO corrigido.
+Lembre-se:
 - O código deve ser executável sem erros
-- Se for ponto de entrada: deve ter interface interativa funcional
-- Sem TODOs, sem stubs, sem placeholders"""
+- Se for ponto de entrada: deve ter interface interativa COMPLETA com todas operações
+- Imports dos módulos do projeto são OBRIGATÓRIOS
+- Sem TODOs, sem stubs, sem placeholders
+- Dados devem persistir em disco (JSON/SQLite)"""
 
 
 # ══════════════════════════════════════════════════════════════
@@ -805,6 +920,10 @@ def executar_projeto(
 
     # ─── FINALIZAÇÃO ───
     sessao.tempo_total_ms = int((time.time() - inicio_total) * 1000)
+
+    # Passada de coerência: verifica imports cruzados e corrige
+    _passada_coerencia(sessao)
+
     problemas_projeto = _validar_projeto_gerado(sessao)
     if problemas_projeto:
         sessao.projeto_validado = False
@@ -1318,6 +1437,142 @@ def _exportar_disco(sessao: SessaoCodigo, diretorio: str | None = None) -> Path:
     }
     (base / "_meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     return base
+
+
+def _passada_coerencia(sessao: SessaoCodigo):
+    """
+    Passada final de coerência: verifica e corrige problemas de integração
+    entre módulos SEM usar LLM (heurísticas determinísticas).
+
+    Corrige automaticamente:
+    - README vazio/genérico → regenera com dados reais
+    - requirements.txt com deps não usadas → remove
+    - Imports faltantes óbvios → adiciona
+    """
+    if not sessao.scratchpad:
+        return
+
+    # 1. README vazio ou genérico → regenera inline (sem LLM)
+    readme_key = next((f for f in sessao.scratchpad if f.lower() == "readme.md"), None)
+    if readme_key:
+        readme = sessao.scratchpad[readme_key]
+        # Detecta README vazio/genérico (< 100 chars ou sem comandos de execução)
+        tem_instrucao = any(x in readme.lower() for x in ["python ", "node ", "npm ", "pip "])
+        if len(readme.strip()) < 100 or not tem_instrucao:
+            sessao.scratchpad[readme_key] = _gerar_readme_deterministico(sessao)
+            console.print("  [dim]📝 README regenerado com dados do projeto[/dim]")
+
+    # 2. Limpa requirements.txt de deps não usadas
+    if "requirements.txt" in sessao.scratchpad:
+        req = sessao.scratchpad["requirements.txt"]
+        codigo_total = "\n".join(
+            c for f, c in sessao.scratchpad.items()
+            if f.endswith(".py") and f != "requirements.txt"
+        )
+        linhas_limpas = []
+        for linha in req.split("\n"):
+            if not linha.strip() or linha.strip().startswith("#"):
+                linhas_limpas.append(linha)
+                continue
+            dep = linha.split(">=")[0].split("==")[0].split("<=")[0].strip().lower()
+            dep_import = dep.replace("-", "_")
+            if dep_import in codigo_total.lower() or dep in codigo_total.lower():
+                linhas_limpas.append(linha)
+        resultado = "\n".join(linhas_limpas).strip()
+        if resultado:
+            sessao.scratchpad["requirements.txt"] = resultado + "\n"
+
+    # 3. Verifica se ponto de entrada importa os módulos disponíveis
+    pontos = {"main.py", "app.py", "index.js", "server.js"}
+    entrada = next((f for f in sessao.scratchpad if f in pontos), None)
+    if entrada and entrada.endswith(".py"):
+        codigo_entrada = sessao.scratchpad[entrada]
+        modulos_py = [
+            f.replace(".py", "") for f in sessao.scratchpad
+            if f.endswith(".py") and f != entrada and "/" not in f
+        ]
+        imports_faltantes = []
+        for mod in modulos_py:
+            if f"from {mod}" not in codigo_entrada and f"import {mod}" not in codigo_entrada:
+                # Verifica se o módulo exporta algo útil
+                mod_code = sessao.scratchpad.get(f"{mod}.py", "")
+                classes = re.findall(r"class\s+(\w+)", mod_code)
+                funcs = [f for f in re.findall(r"^def\s+(\w+)", mod_code, re.MULTILINE) if not f.startswith("_")]
+                if classes or funcs:
+                    exports = classes[:3] + funcs[:3]
+                    imports_faltantes.append(f"from {mod} import {', '.join(exports)}")
+
+        if imports_faltantes:
+            # Adiciona imports no topo (após shebang/docstring e imports existentes)
+            linhas = codigo_entrada.split("\n")
+            insert_pos = 0
+            for i, linha in enumerate(linhas):
+                if linha.startswith("#!") or linha.startswith('"""') or linha.startswith("'''"):
+                    insert_pos = i + 1
+                elif linha.startswith("import ") or linha.startswith("from "):
+                    insert_pos = i + 1
+                elif insert_pos > 0 and linha.strip():
+                    break
+            for imp in reversed(imports_faltantes):
+                linhas.insert(insert_pos, imp)
+            sessao.scratchpad[entrada] = "\n".join(linhas)
+            console.print(f"  [dim]🔗 Imports adicionados em {entrada}: {len(imports_faltantes)}[/dim]")
+
+
+def _gerar_readme_deterministico(sessao: SessaoCodigo) -> str:
+    """Gera README completo baseado nos arquivos reais do projeto, sem LLM."""
+    titulo = sessao.objetivo.split(".")[0].strip().title()
+    linhas = [f"# {titulo}", "", sessao.objetivo, ""]
+
+    # Instalação
+    if "requirements.txt" in sessao.scratchpad:
+        linhas.extend([
+            "## Instalação", "",
+            "```bash",
+            "pip install -r requirements.txt",
+            "```", "",
+        ])
+    elif "package.json" in sessao.scratchpad:
+        linhas.extend([
+            "## Instalação", "",
+            "```bash",
+            "npm install",
+            "```", "",
+        ])
+
+    # Execução
+    pontos = {"main.py": "python main.py", "app.py": "python app.py",
+              "index.js": "node index.js", "server.js": "node server.js"}
+    entrada = next((f for f in sessao.scratchpad if f in pontos), None)
+    if entrada:
+        cmd = pontos[entrada]
+        linhas.extend(["## Execução", "", "```bash", cmd, "```", ""])
+        # Detecta se é web
+        codigo = sessao.scratchpad.get(entrada, "")
+        if "5000" in codigo:
+            linhas.append("Acesse: http://localhost:5000\n")
+        elif "3000" in codigo:
+            linhas.append("Acesse: http://localhost:3000\n")
+        elif "8000" in codigo:
+            linhas.append("Acesse: http://localhost:8000\n")
+
+    # Funcionalidades
+    linhas.extend(["## Funcionalidades", ""])
+    for step in sessao.plano:
+        if step.arquivo and step.arquivo.lower() != "readme.md" and step.arquivo != "requirements.txt":
+            linhas.append(f"- {step.descricao}")
+    linhas.append("")
+
+    # Estrutura
+    linhas.extend(["## Estrutura do Projeto", "", "| Arquivo | Descrição |", "|---------|-----------|"])
+    for arquivo in sorted(sessao.scratchpad.keys()):
+        if arquivo.lower() == "readme.md":
+            continue
+        desc = next((s.descricao for s in sessao.plano if s.arquivo == arquivo), arquivo)
+        linhas.append(f"| `{arquivo}` | {desc} |")
+    linhas.append("")
+
+    return "\n".join(linhas)
 
 
 def _validar_projeto_gerado(sessao: SessaoCodigo) -> list[str]:
