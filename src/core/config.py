@@ -161,7 +161,7 @@ OLLAMA_TIMEOUT = int(os.environ.get("NEURON_OLLAMA_TIMEOUT", "120"))
 # num_ctx por nível (janela de contexto = KV cache = RAM). Menor no nível rápido.
 NUM_CTX_NIVEL = {
     2: int(os.environ.get("NEURON_NUM_CTX_RAPIDO", "2048")),
-    3: int(os.environ.get("NEURON_NUM_CTX_PROFUNDO", "4096")),
+    3: int(os.environ.get("NEURON_NUM_CTX_PROFUNDO", "3072")),
 }
 # Janela mínima para chamadas auxiliares (classificação de intenção, resumo).
 NUM_CTX_AUXILIAR = int(os.environ.get("NEURON_NUM_CTX_AUXILIAR", "1024"))
@@ -205,9 +205,12 @@ AGENTES = {
         "modelo_rapido": MODELOS["rapido"],
         "modelo_profundo": MODELOS["coder"],
         "system_prompt": (
-            "Você é um programador especialista em Python, AWS, Laravel, Angular e IA. "
-            "Responda de forma direta e prática com código funcional. "
-            "Use boas práticas e explique brevemente o que faz."
+            "Você é um programador sênior full-stack. "
+            "Cria código COMPLETO, FUNCIONAL e EXECUTÁVEL — nunca stubs ou TODOs. "
+            "Integra módulos corretamente via imports. "
+            "Para projetos: gera CRUD completo com persistência em disco (JSON/SQLite), "
+            "interface interativa (CLI com menu ou web com rotas), e tratamento de erros. "
+            "Responde direto com código quando pedido, explicação breve quando necessário."
         ),
         "palavras_chave": [
             "python", "código", "programar", "função", "classe", "bug", "erro",

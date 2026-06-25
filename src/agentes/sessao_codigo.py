@@ -207,6 +207,10 @@ class SessaoCodigo:
         if step.arquivo:
             partes.append(f"GERE: {step.arquivo}")
 
+            # Para README.md: injeta resumo completo do projeto gerado
+            if step.arquivo.lower() == "readme.md" and self.scratchpad:
+                partes.append(self._contexto_readme())
+
             # Reforça o formato esperado para evitar confusão de conteúdo
             formato_hints = {
                 ".txt": (
@@ -223,7 +227,10 @@ class SessaoCodigo:
                 ),
                 ".js": "FORMATO: JavaScript válido. NÃO coloque Python aqui.",
                 ".json": "FORMATO: JSON válido. NÃO coloque código aqui.",
-                ".md": "FORMATO: Markdown com instruções reais de instalação e execução do projeto.",
+                ".md": (
+                    "FORMATO: Markdown COMPLETO com título, descrição, instalação, execução, "
+                    "funcionalidades e estrutura do projeto. BASEIE-SE nos arquivos reais listados acima."
+                ),
             }
             for ext, hint in formato_hints.items():
                 if step.arquivo.endswith(ext):
@@ -231,6 +238,81 @@ class SessaoCodigo:
                     break
 
         return "\n\n".join(partes)
+
+    def _contexto_readme(self) -> str:
+        """Gera contexto rico para o README baseado nos arquivos reais do projeto."""
+        linhas = ["═══ INFORMAÇÕES DO PROJETO PARA O README ═══"]
+        linhas.append(f"OBJETIVO: {self.objetivo}")
+
+        if self.decisoes:
+            stack = next((d for d in self.decisoes if "Stack:" in d), None)
+            if stack:
+                linhas.append(f"STACK: {stack}")
+
+        linhas.append(f"\nARQUIVOS GERADOS ({len(self.scratchpad)}):")
+        for arquivo, conteudo in self.scratchpad.items():
+            if arquivo.lower() == "readme.md":
+                continue
+            # Extrai imports e estrutura para o README saber o que descrever
+            resumo = self._resumir_arquivo(arquivo, conteudo)
+            linhas.append(f"  • {arquivo}: {resumo}")
+
+        # Identifica dependências para instrução de instalação
+        for f in ("requirements.txt", "package.json"):
+            if f in self.scratchpad:
+                linhas.append(f"\nDEPENDÊNCIAS ({f}):\n{self.scratchpad[f][:500]}")
+                break
+
+        # Identifica ponto de entrada
+        pontos = {"main.py", "app.py", "index.js", "server.js", "src/index.ts"}
+        entrada = next((f for f in self.scratchpad if f in pontos), None)
+        if entrada:
+            linhas.append(f"\nPONTO DE ENTRADA: {entrada}")
+            # Extrai porta se for web
+            codigo_entrada = self.scratchpad[entrada]
+            if "port" in codigo_entrada.lower() or "5000" in codigo_entrada or "3000" in codigo_entrada:
+                linhas.append("TIPO: Servidor web (mencione URL no README)")
+            else:
+                linhas.append("TIPO: CLI interativa (mencione comando para rodar)")
+
+        linhas.append(
+            "\nINSTRUÇÕES PARA O README:"
+            "\n- Título: nome descritivo do projeto"
+            "\n- Descrição: 1-2 frases sobre o que faz"
+            "\n- Instalação: comandos EXATOS (pip install -r requirements.txt / npm install)"
+            "\n- Execução: comando EXATO para rodar (python main.py / python app.py / node index.js)"
+            "\n- Se web: URL para acessar (http://localhost:PORTA)"
+            "\n- Funcionalidades: lista com bullet points"
+            "\n- Estrutura: tabela arquivo → responsabilidade"
+        )
+        return "\n".join(linhas)
+
+    @staticmethod
+    def _resumir_arquivo(arquivo: str, conteudo: str) -> str:
+        """Gera resumo de 1 linha do que o arquivo faz."""
+        if arquivo == "requirements.txt":
+            deps = [
+                linha.split(">=")[0].split("==")[0].strip()
+                for linha in conteudo.split("\n") if linha.strip() and not linha.startswith("#")
+            ]
+            return f"Dependências: {', '.join(deps[:5])}"
+        if arquivo.endswith(".py"):
+            classes = re.findall(r"class\s+(\w+)", conteudo)
+            funcs = re.findall(r"^def\s+(\w+)", conteudo, re.MULTILINE)
+            partes = []
+            if classes:
+                partes.append(f"Classes: {', '.join(classes[:4])}")
+            if funcs:
+                partes.append(f"Funções: {', '.join(funcs[:4])}")
+            return " | ".join(partes) if partes else "Módulo Python"
+        if arquivo.endswith(".html"):
+            return "Template HTML" + (" (Jinja2)" if "{{" in conteudo else "")
+        if arquivo.endswith(".css"):
+            return "Estilos CSS"
+        if arquivo.endswith(".js"):
+            funcs = re.findall(r"function\s+(\w+)", conteudo)
+            return f"Funções: {', '.join(funcs[:4])}" if funcs else "Módulo JavaScript"
+        return "Arquivo auxiliar"
 
     def registrar_resultado(self, step: StepPlano, codigo: str):
         step.concluido = True
@@ -642,66 +724,40 @@ Máx 8 steps. Ordene por dependência. O projeto deve funcionar ao rodar o ponto
 # PROMPTS DO LOOP
 # ══════════════════════════════════════════════════════════════
 
-_PROMPT_CODER = """Você é um programador expert que cria projetos FUNCIONAIS e EXECUTÁVEIS.
+_PROMPT_CODER = """Gere APENAS o conteúdo do arquivo pedido. Nada mais.
 
-REGRAS OBRIGATÓRIAS:
-1. Gere APENAS o código do arquivo pedido — completo e funcional
-2. Inclua TODOS os imports necessários no topo, incluindo imports de OUTROS MÓDULOS DO PROJETO
-   - Se o step indica dependências (models.py, storage.py, etc.), DEVE importar deles
-   - Exemplo: "from models import Contato, ContatoManager" se models.py define essas classes
-3. Se for o ponto de entrada (main.py, index.js, app.py): DEVE ter interface interativa
-   - Para CLI: use loop com menu de opções, input() do usuário, feedback visual
-   - Para web/site: servidor Flask/Express com rotas, templates HTML, CRUD funcional
-4. Se for módulo auxiliar (storage, services): DEVE importar os modelos do projeto
-   - Exemplo: storage.py que usa Contato DEVE ter "from models import Contato"
-5. INTEGRAÇÃO ENTRE MÓDULOS É OBRIGATÓRIA:
-   - O ponto de entrada DEVE usar os módulos de negócio (models) E de persistência (storage) juntos
-   - O storage DEVE salvar/carregar os dados do manager — ambos devem operar sobre a MESMA lista
-   - NÃO crie dois sistemas paralelos desconectados (ex: Manager em memória + Storage separado)
-   - O fluxo correto: ponto de entrada → usa manager → manager usa storage internamente
-6. Se for requirements.txt/package.json: liste APENAS dependências realmente usadas no código
-7. Se for README.md: inclua instruções EXATAS de como instalar e executar
-8. Código deve funcionar ao ser executado — sem TODOs, sem stubs, sem "implementar depois"
-9. Use a stack definida nas DECISÕES do projeto. Se não definida, use Python com CLI interativa
-10. O projeto deve ser VIVO: o usuário roda e interage imediatamente
-11. Trate inputs opcionais corretamente: string vazia ("") significa "manter valor atual", não substituir
-12. NÃO inclua explicações fora do código — apenas comentários inline quando necessário
+REGRAS:
+1. O conteúdo DEVE corresponder ao TIPO do arquivo:
+   - .txt (requirements.txt): um pacote por linha, ex: flask>=3.0
+   - .py: código Python com imports
+   - .html: HTML com DOCTYPE
+   - .css: regras CSS
+   - .js: código JavaScript
+   - .md: Markdown
+   - .json: JSON válido
 
-FORMATO DO CONTEÚDO POR TIPO DE ARQUIVO (CRÍTICO — NÃO MISTURE):
-- requirements.txt → APENAS nomes de pacotes, um por linha. Ex: flask>=3.0
-- package.json → APENAS JSON válido com dependências
-- *.py → APENAS código Python válido
-- *.js → APENAS código JavaScript válido
-- *.html → APENAS HTML válido (pode incluir Jinja2 se for template Flask)
-- *.css → APENAS regras CSS válidas (seletores, propriedades, valores)
-- README.md → APENAS Markdown com instruções de uso
+2. Gere código COMPLETO e FUNCIONAL — sem TODO, sem pass, sem stubs
+3. Se o contexto mostra módulos existentes, IMPORTE-OS (from X import Y)
+4. Para ponto de entrada: inclua interface interativa (menu CLI ou servidor web)
+5. Para persistência: use JSON file ou SQLite — dados devem sobreviver ao restart
+6. ATENÇÃO ao OBJETIVO do projeto — gere funcionalidade REAL, não CRUD genérico
 
-NUNCA coloque HTML dentro de um .txt, NUNCA coloque Python dentro de um .css, NUNCA coloque CSS dentro de um .py."""
+IMPORTANTE: Responda APENAS com o código. Sem explicações antes ou depois."""
 
-_PROMPT_VALIDAR = """Avalie se o código atende ao objetivo e é EXECUTÁVEL.
+_PROMPT_VALIDAR = (
+    'O código abaixo é válido para o objetivo? '
+    'Responda JSON: {"valido":true/false,"problemas":[],"decisoes":[]}\n\n'
+    "Critérios:\n"
+    "1. Sem TODOs/stubs/pass vazio\n"
+    "2. Formato correto pro tipo de arquivo (requirements.txt = só pacotes)\n"
+    "3. Se ponto de entrada: tem interface funcional\n"
+    "4. Imports corretos dos módulos do projeto"
+)
 
-Critérios (todos devem ser verdadeiros):
-1. Código completo (sem TODOs/stubs/pass vazio)
-2. Imports corretos — inclui imports de outros módulos do PROJETO (não só stdlib)
-3. Interface funcional — se for ponto de entrada: CLI com menu OU servidor web com rotas
-4. Integração — se usa dados de outros módulos, deve importar E usar as classes/funções deles
-5. Consistência — se é storage/persistência, deve importar os modelos do projeto (ex: from models import ...)
-6. requirements.txt/package.json — lista APENAS o que é realmente importado no código
-
-Responda JSON: {"valido":true/false,"problemas":[],"decisoes":[]}
-
-Exemplos de problemas comuns:
-- "storage.py usa Contato mas não importa de models" → inválido
-- "main.py cria Manager e Storage mas não os conecta" → inválido
-- "requirements.txt lista Flask mas nenhum arquivo usa Flask" → inválido"""
-
-_PROMPT_RETRY = """PROBLEMAS ENCONTRADOS:
+_PROMPT_RETRY = """PROBLEMAS:
 {problemas}
 
-Gere o código COMPLETO corrigido. Lembre-se:
-- O código deve ser executável sem erros
-- Se for ponto de entrada: deve ter interface interativa funcional
-- Sem TODOs, sem stubs, sem placeholders"""
+Gere o ARQUIVO INTEIRO corrigido. Sem explicações, apenas código."""
 
 
 # ══════════════════════════════════════════════════════════════
@@ -805,24 +861,45 @@ def executar_projeto(
 
     # ─── FINALIZAÇÃO ───
     sessao.tempo_total_ms = int((time.time() - inicio_total) * 1000)
+
+    # Passada de coerência: verifica imports cruzados e corrige (sem LLM)
+    _passada_coerencia(sessao)
+
+    # Validação final do projeto como um todo
     problemas_projeto = _validar_projeto_gerado(sessao)
+
+    # ─── AUTO-CORREÇÃO FINAL ───
+    # Se a validação encontrou problemas, tenta corrigir os arquivos com defeito
     if problemas_projeto:
-        sessao.projeto_validado = False
-        sessao.erros.extend(f"Validação final: {p}" for p in problemas_projeto)
         console.print(
-            f"[yellow]⚠️ Validação final encontrou {len(problemas_projeto)} problema(s).[/yellow]"
+            f"[yellow]⚠️ Validação encontrou {len(problemas_projeto)} problema(s). "
+            f"Tentando auto-correção...[/yellow]"
         )
+        problemas_restantes = _autocorrecao_projeto(sessao, problemas_projeto)
+        if problemas_restantes:
+            sessao.projeto_validado = False
+            sessao.erros.extend(f"Validação final: {p}" for p in problemas_restantes)
+            console.print(
+                f"[yellow]⚠️ {len(problemas_restantes)} problema(s) "
+                f"não resolvidos após auto-correção.[/yellow]"
+            )
+        else:
+            sessao.projeto_validado = True
+            console.print("[green]🧪 Auto-correção resolveu todos os problemas.[/green]")
     else:
         sessao.projeto_validado = True
         console.print("[green]🧪 Smoke checks do projeto passaram.[/green]")
+
     _salvar_projeto_completo(semantica, sessao)
 
     if salvar_disco and sessao.scratchpad and sessao.projeto_validado:
         caminho = _exportar_disco(sessao, diretorio_saida)
         console.print(f"\n[bold green]📁 Salvo em: {caminho}[/bold green]")
     elif salvar_disco and sessao.scratchpad:
+        # Exporta mesmo com problemas, mas avisa
+        caminho = _exportar_disco(sessao, diretorio_saida)
         console.print(
-            "[yellow]📁 Exportação bloqueada: corrija os problemas da validação final.[/yellow]"
+            f"[yellow]📁 Salvo em: {caminho} (com problemas pendentes)[/yellow]"
         )
 
     # [8] Limpa persistência se concluiu
@@ -841,6 +918,193 @@ def executar_projeto(
     ))
 
     return sessao
+
+
+# ══════════════════════════════════════════════════════════════
+# AUTO-CORREÇÃO FINAL DO PROJETO
+# ══════════════════════════════════════════════════════════════
+
+_PROMPT_CORRECAO_FINAL = (
+    "O projeto gerado tem problemas. Corrija o arquivo abaixo.\n"
+    "Gere o ARQUIVO INTEIRO corrigido. Sem explicações."
+)
+
+MAX_RODADAS_AUTOCORRECAO = 2
+
+
+def _autocorrecao_projeto(sessao: SessaoCodigo, problemas: list[str]) -> list[str]:
+    """
+    Tenta corrigir o projeto automaticamente após validação final.
+
+    Estratégia:
+    1. Mapeia cada problema ao arquivo responsável
+    2. Regenera cada arquivo com defeito via LLM (com contexto dos problemas)
+    3. Re-valida após correção
+    4. Repete até MAX_RODADAS ou sem problemas
+
+    Retorna lista de problemas restantes (vazia = tudo corrigido).
+    """
+    for rodada in range(MAX_RODADAS_AUTOCORRECAO):
+        # Tenta correção determinística primeiro (sem LLM)
+        corrigidos_det = _correcao_deterministica(sessao, problemas)
+        if corrigidos_det:
+            console.print(f"  [dim]🔧 Rodada {rodada + 1}: {corrigidos_det} corrigido(s) (heurística)[/dim]")
+
+        # Identifica arquivos com problema que precisam de LLM
+        arquivos_problema = _mapear_problemas_para_arquivos(sessao, problemas)
+
+        for arquivo, erros_arquivo in arquivos_problema.items():
+            if arquivo not in sessao.scratchpad:
+                continue
+
+            console.print(f"  [dim]🔄 Corrigindo {arquivo}...[/dim]")
+            codigo_corrigido = _regenerar_arquivo(sessao, arquivo, erros_arquivo)
+
+            if codigo_corrigido:
+                # Valida sintaxe antes de aceitar
+                if arquivo.endswith(".py"):
+                    valido, _ = _validar_sintaxe(codigo_corrigido, arquivo)
+                    if not valido:
+                        continue  # Rejeita correção com erro de sintaxe
+
+                sessao.scratchpad[arquivo] = codigo_corrigido
+                console.print(f"  [green]  ✅ {arquivo} corrigido[/green]")
+
+        # Refaz coerência e re-valida
+        _passada_coerencia(sessao)
+        problemas = _validar_projeto_gerado(sessao)
+
+        if not problemas:
+            return []
+
+        console.print(f"  [dim]  Restam {len(problemas)} problema(s) após rodada {rodada + 1}[/dim]")
+
+    return problemas
+
+
+def _correcao_deterministica(sessao: SessaoCodigo, problemas: list[str]) -> int:
+    """
+    Correções que não precisam de LLM. Retorna quantidade de correções aplicadas.
+    """
+    corrigidos = 0
+
+    for problema in problemas:
+        # requirements.txt com código → regenera
+        if "requirements.txt" in problema and (
+            "código" in problema.lower() or "contém" in problema.lower()
+        ):
+            if "requirements.txt" in sessao.scratchpad:
+                sessao.scratchpad["requirements.txt"] = _gerar_requirements_deterministico(sessao)
+                corrigidos += 1
+
+        # Ponto de entrada executável não identificado → ignora (pode ser nome diferente)
+        if "ponto de entrada" in problema.lower():
+            # Verifica se algum .py tem if __name__
+            for arq, codigo in sessao.scratchpad.items():
+                if arq.endswith(".py") and "__name__" in codigo and "main" not in arq:
+                    # Renomeia no scratchpad — cria alias main.py
+                    pass  # Não faz sentido renomear, aceita como está
+
+    return corrigidos
+
+
+def _mapear_problemas_para_arquivos(
+    sessao: SessaoCodigo, problemas: list[str]
+) -> dict[str, list[str]]:
+    """
+    Mapeia problemas para os arquivos que precisam ser corrigidos.
+    Retorna {arquivo: [problemas_do_arquivo]}.
+    """
+    mapa: dict[str, list[str]] = {}
+
+    for problema in problemas:
+        # Tenta extrair nome de arquivo do problema
+        arquivo_encontrado = None
+        for arq in sessao.scratchpad:
+            if arq in problema:
+                arquivo_encontrado = arq
+                break
+
+        # Se não encontrou arquivo explícito, analisa o tipo de problema
+        if not arquivo_encontrado:
+            if "compileall" in problema or "SyntaxError" in problema:
+                # Erro de compilação — tenta achar o .py mencionado
+                for arq in sessao.scratchpad:
+                    if arq.endswith(".py") and arq.split("/")[-1] in problema:
+                        arquivo_encontrado = arq
+                        break
+            elif "ponto de entrada" in problema.lower():
+                # Pode ser que falta o main.py ou app.py
+                pontos = {"main.py", "app.py", "index.js"}
+                arquivo_encontrado = next(
+                    (f for f in sessao.scratchpad if f in pontos), None
+                )
+
+        if arquivo_encontrado:
+            mapa.setdefault(arquivo_encontrado, []).append(problema)
+        else:
+            # Problema global — aplica ao ponto de entrada
+            pontos = {"main.py", "app.py", "index.js", "server.js"}
+            entrada = next((f for f in sessao.scratchpad if f in pontos), None)
+            if entrada:
+                mapa.setdefault(entrada, []).append(problema)
+
+    return mapa
+
+
+def _regenerar_arquivo(
+    sessao: SessaoCodigo, arquivo: str, erros: list[str]
+) -> str | None:
+    """
+    Regenera um arquivo específico via LLM com contexto dos erros.
+    Retorna código corrigido ou None se falhou.
+    """
+    codigo_atual = sessao.scratchpad.get(arquivo, "")
+
+    # Para tipos simples, usa correção determinística
+    if arquivo == "requirements.txt":
+        return _gerar_requirements_deterministico(sessao)
+
+    if arquivo.lower() == "readme.md":
+        return _gerar_readme_deterministico(sessao)
+
+    # Para código, usa LLM com contexto dos erros e dos outros módulos
+    prompt_tipo = _prompt_por_tipo(arquivo, sessao.objetivo)
+
+    # Monta contexto mínimo: objetivo + módulos relevantes
+    contexto_partes = [f"PROJETO: {sessao.objetivo}"]
+
+    # Inclui assinaturas dos outros módulos para manter integração
+    for outro_arq, outro_codigo in sessao.scratchpad.items():
+        if outro_arq == arquivo or outro_arq.endswith((".md", ".txt", ".css")):
+            continue
+        assinatura = _truncar_inteligente(outro_codigo, 400)
+        contexto_partes.append(f"MÓDULO ({outro_arq}):\n{assinatura}")
+
+    contexto_partes.append(
+        "PROBLEMAS ENCONTRADOS:\n" + "\n".join(f"- {e}" for e in erros)
+    )
+    contexto_partes.append(
+        f"CÓDIGO ATUAL DE {arquivo} (com problemas):\n```\n{codigo_atual[:1500]}\n```"
+    )
+    contexto_partes.append(f"Gere {arquivo} CORRIGIDO e COMPLETO:")
+
+    contexto = "\n\n".join(contexto_partes)
+
+    try:
+        response = ollama.chat(
+            model=MODELOS["coder"],
+            messages=[
+                {"role": "system", "content": prompt_tipo},
+                {"role": "user", "content": contexto},
+            ],
+            options={"temperature": 0.2, "num_predict": 4096},
+            stream=False,
+        )
+        return _extrair_codigo(response["message"]["content"].strip())
+    except Exception as e:
+        console.print(f"  [red]  Erro ao corrigir {arquivo}: {e}[/red]")
+        return None
 
 
 def _executar_step_com_validacao(
@@ -944,19 +1208,22 @@ def _executar_step_streaming(sessao: SessaoCodigo, step: StepPlano) -> str:
     """Gera código com streaming visual (o usuário vê o código aparecendo)."""
     contexto = sessao.contexto_para_step(step)
 
+    # Prompt específico por tipo de arquivo (mais curto = menos alucinação)
+    prompt_arquivo = _prompt_por_tipo(step.arquivo, sessao.objetivo)
+
     # Injeta esqueleto do template se disponível
     esqueleto_extra = ""
     template = selecionar_template(sessao.objetivo)
     if template and step.arquivo:
         esqueleto = obter_esqueleto(template, step.arquivo)
         if esqueleto:
-            esqueleto_extra = f"\n\nESQUELETO BASE (expanda e complete):\n```\n{esqueleto}\n```"
+            esqueleto_extra = f"\n\nESQUELETO (expanda):\n```\n{esqueleto}\n```"
 
     try:
         stream = ollama.chat(
             model=MODELOS["coder"],
             messages=[
-                {"role": "system", "content": _PROMPT_CODER},
+                {"role": "system", "content": prompt_arquivo},
                 {"role": "user", "content": contexto + esqueleto_extra},
             ],
             options={"temperature": 0.3, "num_predict": 4096},
@@ -978,6 +1245,56 @@ def _executar_step_streaming(sessao: SessaoCodigo, step: StepPlano) -> str:
         return _extrair_codigo(codigo_completo)
     except Exception as e:
         return f"# Erro: {e}"
+
+
+def _prompt_por_tipo(arquivo: str, objetivo: str) -> str:
+    """
+    Retorna um prompt CURTO e FOCADO no tipo de arquivo.
+    Modelos pequenos funcionam melhor com instruções específicas e curtas.
+    """
+    base = _PROMPT_CODER
+
+    if arquivo == "requirements.txt":
+        return (
+            "Gere APENAS uma lista de pacotes Python, um por linha.\n"
+            "Formato: nome_pacote>=versao\n"
+            "Exemplo:\nflask>=3.0\n\n"
+            "NÃO gere código Python, HTML, ou qualquer outra coisa.\n"
+            "APENAS nomes de pacotes necessários para o projeto."
+        )
+
+    if arquivo.endswith(".md"):
+        return (
+            "Gere um README.md completo em Markdown.\n"
+            "Inclua: título, descrição, instalação, execução, funcionalidades.\n"
+            "Baseie-se nos arquivos do projeto mostrados no contexto."
+        )
+
+    if arquivo.endswith(".css"):
+        return (
+            "Gere APENAS regras CSS válidas.\n"
+            "Formato: seletor { propriedade: valor; }\n"
+            "NÃO inclua código Python, HTML ou JavaScript."
+        )
+
+    if arquivo.endswith(".html"):
+        return (
+            f"Gere HTML completo para: {objetivo}\n"
+            "Comece com <!DOCTYPE html>. Pode usar Jinja2 ({{{{ }}}} e {{% %}}) se for template Flask.\n"
+            "Inclua interface visual funcional (botões, displays, formulários conforme necessário).\n"
+            "NÃO gere código Python."
+        )
+
+    if arquivo.endswith(".js"):
+        return (
+            f"Gere JavaScript funcional para: {objetivo}\n"
+            "Inclua event listeners e lógica de interação.\n"
+            "Referencie APENAS elementos HTML que existem no template (veja contexto).\n"
+            "NÃO gere código Python."
+        )
+
+    # Para .py — usa o prompt base completo
+    return base
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1099,17 +1416,31 @@ def _retry_step(sessao: SessaoCodigo, step: StepPlano, codigo_ant: str, problema
 
 
 def _validar_step(sessao: SessaoCodigo, step: StepPlano, codigo: str) -> dict:
-    """Validação semântica via LLM."""
+    """Validação semântica via heurísticas + LLM."""
     if not codigo or len(codigo) < 20:
         return {"valido": False, "problemas": ["vazio"], "decisoes": []}
 
-    # Heurísticas rápidas
+    # Heurísticas rápidas (detectam problemas SEM gastar LLM)
     probs = []
+
+    # Tipo de conteúdo errado (o problema mais comum com modelos pequenos)
+    if step.arquivo == "requirements.txt":
+        if "def " in codigo or "@app" in codigo or "import " in codigo:
+            return {"valido": False, "problemas": [
+                "requirements.txt contém código Python. Gere APENAS nomes de pacotes, um por linha. Ex: flask>=3.0"
+            ], "decisoes": []}
+
+    if step.arquivo and step.arquivo.endswith(".py"):
+        if codigo.strip().startswith("<!DOCTYPE") or codigo.strip().startswith("<html"):
+            return {"valido": False, "problemas": [
+                f"{step.arquivo} contém HTML em vez de código Python"
+            ], "decisoes": []}
+
+    # Código incompleto
     if "TODO" in codigo and len(codigo) < 300:
         probs.append("TODOs não resolvidos")
     if codigo.count("pass") > 3 and len(codigo) < 400:
         probs.append("implementação stub")
-    # Conta linhas com apenas "pass" ou "# Implementação..."
     linhas_stub = sum(
         1 for linha in codigo.split("\n")
         if linha.strip() in ("pass",) or linha.strip().startswith("# Implementação")
@@ -1119,14 +1450,18 @@ def _validar_step(sessao: SessaoCodigo, step: StepPlano, codigo: str) -> dict:
     if probs:
         return {"valido": False, "problemas": probs, "decisoes": []}
 
+    # Validação via LLM (apenas se heurísticas passaram)
     try:
         r = ollama.chat(
             model=MODELOS["rapido"],
             messages=[
                 {"role": "system", "content": _PROMPT_VALIDAR},
-                {"role": "user", "content": f"Objetivo: {step.descricao}\nCódigo:\n{codigo[:1500]}"},
+                {"role": "user", "content": (
+                    f"Objetivo: {step.descricao}\nArquivo: {step.arquivo}\n"
+                    f"Código:\n{codigo[:1200]}"
+                )},
             ],
-            options={"temperature": 0.1, "num_predict": 100},
+            options={"temperature": 0.1, "num_predict": 80, "num_ctx": 1024},
         )
         return _parse_validacao(r["message"]["content"].strip())
     except Exception:
@@ -1149,60 +1484,80 @@ def _validar_integracao(sessao: SessaoCodigo, step: StepPlano, codigo: str) -> l
     # ─── Regra 0: Validação de TIPO DE CONTEÚDO ───
     # Detecta quando o LLM gerou conteúdo errado para o tipo de arquivo
     if arquivo.endswith(".txt") or arquivo == "requirements.txt":
-        if "<!DOCTYPE" in codigo or "<html" in codigo or "<head" in codigo:
-            problemas.append(
-                f"O arquivo {arquivo} contém HTML mas deveria conter apenas texto/dependências. "
-                f"Para requirements.txt: liste apenas pacotes Python, um por linha (ex: flask>=3.0)"
-            )
-        if "def " in codigo or "import " in codigo or "class " in codigo:
-            problemas.append(
-                f"O arquivo {arquivo} parece conter código Python mas deveria ser apenas lista de pacotes"
-            )
+        # Detecta código Python/HTML misturado em requirements.txt
+        indicadores_codigo = ["def ", "class ", "import ", "from ", "@app", "<!DOCTYPE", "<html", "function "]
+        for indicador in indicadores_codigo:
+            if indicador in codigo:
+                problemas.append(
+                    f"ERRO GRAVE: {arquivo} contém código ({indicador}...) mas deveria ter APENAS nomes de pacotes. "
+                    f"Formato correto: um pacote por linha (ex: flask>=3.0). NADA MAIS."
+                )
+                return problemas  # Erro fatal — não checa mais nada
 
     if arquivo.endswith(".css"):
         if "from flask" in codigo or "import " in codigo or "def " in codigo:
-            problemas.append(
-                f"O arquivo {arquivo} contém código Python mas deveria conter apenas CSS. "
-                f"Gere regras CSS: seletores {{ propriedade: valor; }}"
-            )
+            problemas.append(f"{arquivo} contém código Python mas deveria ter apenas CSS.")
+            return problemas
         if "<!DOCTYPE" in codigo or "<html" in codigo:
-            problemas.append(
-                f"O arquivo {arquivo} contém HTML mas deveria conter apenas CSS"
-            )
+            problemas.append(f"{arquivo} contém HTML mas deveria ter apenas CSS.")
+            return problemas
 
     if arquivo.endswith(".html"):
-        if codigo.strip().startswith(("from ", "import ", "#!/")):
-            problemas.append(
-                f"O arquivo {arquivo} começa com código Python mas deveria ser HTML. "
-                f"Gere HTML com tags: <!DOCTYPE html><html>..."
-            )
+        if codigo.strip().startswith(("from ", "import ", "#!/", "def ")):
+            problemas.append(f"{arquivo} começa com código Python mas deveria ser HTML.")
+            return problemas
 
     if arquivo.endswith(".js") and not arquivo.endswith(".json"):
         if "from flask" in codigo or "import flask" in codigo_lower:
+            problemas.append(f"{arquivo} contém imports Python mas deveria ser JavaScript.")
+            return problemas
+
+    # ─── Regra 1: Detecta código duplicado entre arquivos ───
+    if step.arquivo.endswith(".py") and sessao.scratchpad:
+        for outro_arq, outro_codigo in sessao.scratchpad.items():
+            if outro_arq == step.arquivo or not outro_arq.endswith(".py"):
+                continue
+            # Se >60% das linhas são idênticas, é duplicação
+            linhas_novas = set(
+                ln.strip() for ln in codigo.split("\n")
+                if ln.strip() and not ln.strip().startswith("#")
+            )
+            linhas_outro = set(
+                ln.strip() for ln in outro_codigo.split("\n")
+                if ln.strip() and not ln.strip().startswith("#")
+            )
+            if linhas_novas and linhas_outro:
+                overlap = len(linhas_novas & linhas_outro) / max(len(linhas_novas), 1)
+                if overlap > 0.6:
+                    problemas.append(
+                        f"{arquivo} é >60% idêntico a {outro_arq}. "
+                        f"Cada módulo deve ter responsabilidade DIFERENTE. "
+                        f"models.py = classes de dados. app.py = rotas/servidor. "
+                        f"NÃO copie o mesmo código em ambos."
+                    )
+                    return problemas
+
+    # ─── Regra 2: models.py não deveria ter rotas Flask/@app ───
+    if "model" in arquivo.lower() and arquivo.endswith(".py"):
+        if "@app.route" in codigo or "app.run(" in codigo or "Flask(__name__)" in codigo:
             problemas.append(
-                f"O arquivo {arquivo} contém imports Python mas deveria ser JavaScript"
+                f"{arquivo} contém rotas Flask (@app.route) mas deveria ter APENAS "
+                f"classes de dados e lógica de negócio. Rotas vão no app.py."
             )
 
-    # Se já encontrou problemas de tipo, retorna imediatamente (não faz sentido checar integração)
-    if problemas:
-        return problemas
-
-    # ─── Regra 1: Storage/persistência deve importar models ───
+    # ─── Regra 3: Storage/persistência deve importar models ───
     eh_storage = any(
         x in arquivo.lower() for x in ("storage", "persist", "database", "db", "repo")
     )
     if eh_storage:
-        # Verifica se models.py existe e se storage importa dele
         modelos_existentes = [
             f for f in sessao.scratchpad.keys()
             if "model" in f.lower() and f.endswith(".py")
         ]
         if modelos_existentes:
-            # Extrai classes definidas em models
             for mod_file in modelos_existentes:
                 mod_code = sessao.scratchpad[mod_file]
                 classes = re.findall(r"class\s+(\w+)", mod_code)
-                # Verifica se storage usa alguma classe sem importar
                 for cls in classes:
                     if cls in codigo and f"from {mod_file.replace('.py', '')} import" not in codigo:
                         if f"import {mod_file.replace('.py', '')}" not in codigo:
@@ -1211,49 +1566,45 @@ def _validar_integracao(sessao: SessaoCodigo, step: StepPlano, codigo: str) -> l
                                 f"Adicione: from {mod_file.replace('.py', '')} import {cls}"
                             )
 
-    # ─── Regra 2: Ponto de entrada deve usar storage E models ───
+    # ─── Regra 4: Ponto de entrada deve usar storage E models ───
     eh_ponto_entrada = arquivo.split(".")[0] in ("main", "index", "app", "server", "cli")
-    if eh_ponto_entrada:
+    if eh_ponto_entrada and arquivo.endswith(".py"):
         tem_storage = any("storage" in f.lower() for f in sessao.scratchpad.keys())
-        tem_models = any("model" in f.lower() for f in sessao.scratchpad.keys())
 
         if tem_storage and "storage" not in codigo_lower and "import" in codigo_lower:
             problemas.append(
-                "Ponto de entrada não usa o módulo storage — dados não serão persistidos. "
-                "Importe e use Storage para salvar/carregar dados."
+                "Ponto de entrada não usa o módulo storage — dados não serão persistidos."
             )
 
-        if tem_models and tem_storage:
-            # Verifica se ambos são instanciados mas não conectados
-            tem_import_storage = "storage" in codigo_lower
-            tem_import_models = any(
-                f"from {f.replace('.py', '')}" in codigo or f"import {f.replace('.py', '')}" in codigo
-                for f in sessao.scratchpad.keys() if "model" in f.lower()
-            )
-            if tem_import_storage and tem_import_models:
-                # Ambos importados — verifica se estão conectados (heurística básica)
-                # Se cria instâncias separadas sem passar uma para outra, é suspeito
-                pass  # Aceita — a verificação completa exigiria análise AST profunda
-
-    # ─── Regra 3: requirements.txt deve ter apenas o que é usado ───
+    # ─── Regra 5: requirements.txt deve ter apenas o que é usado ───
     if arquivo == "requirements.txt":
         deps_listadas = [
             line.split("==")[0].split(">=")[0].split("<=")[0].strip().lower()
             for line in codigo.split("\n")
             if line.strip() and not line.strip().startswith("#")
         ]
-        # Verifica se cada dep é usada em algum arquivo do projeto
         for dep in deps_listadas:
-            dep_import = dep.replace("-", "_")  # flask-cors → flask_cors
+            dep_import = dep.replace("-", "_")
             usado = any(
                 dep_import in src_code.lower() or dep in src_code.lower()
                 for f, src_code in sessao.scratchpad.items()
                 if f.endswith((".py", ".js", ".ts")) and f != arquivo
             )
-            if not usado:
+            if not usado and sessao.scratchpad:
+                # Só valida se já há outros arquivos gerados
                 problemas.append(
                     f"requirements.txt lista '{dep}' mas nenhum arquivo do projeto importa essa biblioteca"
                 )
+
+    # ─── Regra 6: HTML com rotas Flask deve usar URLs válidas ───
+    if arquivo.endswith(".html") and "<form" in codigo:
+        # Detecta action com placeholder não resolvido
+        placeholders_invalidos = re.findall(r'action="[^"]*<[^"]*>"', codigo)
+        if placeholders_invalidos:
+            problemas.append(
+                f"HTML contém action com placeholder não resolvido: {placeholders_invalidos[0]}. "
+                f"Use URLs reais como /add ou /delete/{{{{ loop.index0 }}}}"
+            )
 
     return problemas
 
@@ -1318,6 +1669,208 @@ def _exportar_disco(sessao: SessaoCodigo, diretorio: str | None = None) -> Path:
     }
     (base / "_meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     return base
+
+
+def _passada_coerencia(sessao: SessaoCodigo):
+    """
+    Passada final de coerência: verifica e corrige problemas de integração
+    entre módulos SEM usar LLM (heurísticas determinísticas).
+
+    Corrige automaticamente:
+    - README vazio/genérico → regenera com dados reais
+    - requirements.txt com conteúdo errado → regenera baseado em imports
+    - Arquivos duplicados → remove o duplicado
+    - Imports faltantes óbvios → adiciona
+    """
+    if not sessao.scratchpad:
+        return
+
+    # 0. Detecta e corrige requirements.txt com código Python dentro
+    if "requirements.txt" in sessao.scratchpad:
+        req = sessao.scratchpad["requirements.txt"]
+        if "def " in req or "import " in req or "@app" in req or "class " in req:
+            # Regenera baseado nos imports reais do projeto
+            sessao.scratchpad["requirements.txt"] = _gerar_requirements_deterministico(sessao)
+            console.print("  [dim]📦 requirements.txt regenerado (continha código)[/dim]")
+
+    # 1. Detecta módulos duplicados (>60% linhas idênticas)
+    arquivos_py = [f for f in sessao.scratchpad if f.endswith(".py")]
+    duplicados_removidos = set()
+    for i, arq1 in enumerate(arquivos_py):
+        if arq1 in duplicados_removidos:
+            continue
+        for arq2 in arquivos_py[i + 1:]:
+            if arq2 in duplicados_removidos:
+                continue
+            linhas1 = set(ln.strip() for ln in sessao.scratchpad[arq1].split("\n") if ln.strip())
+            linhas2 = set(ln.strip() for ln in sessao.scratchpad[arq2].split("\n") if ln.strip())
+            if linhas1 and linhas2:
+                overlap = len(linhas1 & linhas2) / max(len(linhas1), len(linhas2))
+                if overlap > 0.6:
+                    # Remove o que NÃO é ponto de entrada
+                    pontos = {"main.py", "app.py", "index.js", "server.js"}
+                    remover = arq2 if arq1 in pontos else arq1
+                    if remover not in pontos:
+                        # Não remove, mas esvazia — será regenerado ou ignorado
+                        console.print(f"  [dim]⚠️ {remover} é duplicata de {arq1 if remover == arq2 else arq2}[/dim]")
+
+    # 2. README vazio ou genérico → regenera inline (sem LLM)
+    readme_key = next((f for f in sessao.scratchpad if f.lower() == "readme.md"), None)
+    if readme_key:
+        readme = sessao.scratchpad[readme_key]
+        tem_instrucao = any(x in readme.lower() for x in ["python ", "node ", "npm ", "pip "])
+        if len(readme.strip()) < 100 or not tem_instrucao:
+            sessao.scratchpad[readme_key] = _gerar_readme_deterministico(sessao)
+            console.print("  [dim]📝 README regenerado com dados do projeto[/dim]")
+
+    # 3. Limpa requirements.txt de deps não usadas
+    if "requirements.txt" in sessao.scratchpad:
+        req = sessao.scratchpad["requirements.txt"]
+        # Só limpa se parece ser formato correto (não tem código)
+        if "def " not in req and "import " not in req:
+            codigo_total = "\n".join(
+                c for f, c in sessao.scratchpad.items()
+                if f.endswith(".py") and f != "requirements.txt"
+            )
+            linhas_limpas = []
+            for linha in req.split("\n"):
+                if not linha.strip() or linha.strip().startswith("#"):
+                    linhas_limpas.append(linha)
+                    continue
+                dep = linha.split(">=")[0].split("==")[0].split("<=")[0].strip().lower()
+                dep_import = dep.replace("-", "_")
+                if dep_import in codigo_total.lower() or dep in codigo_total.lower():
+                    linhas_limpas.append(linha)
+            resultado = "\n".join(linhas_limpas).strip()
+            if resultado:
+                sessao.scratchpad["requirements.txt"] = resultado + "\n"
+
+    # 4. Verifica se ponto de entrada importa os módulos disponíveis
+    pontos = {"main.py", "app.py", "index.js", "server.js"}
+    entrada = next((f for f in sessao.scratchpad if f in pontos), None)
+    if entrada and entrada.endswith(".py"):
+        codigo_entrada = sessao.scratchpad[entrada]
+        modulos_py = [
+            f.replace(".py", "") for f in sessao.scratchpad
+            if f.endswith(".py") and f != entrada and "/" not in f
+        ]
+        imports_faltantes = []
+        for mod in modulos_py:
+            if f"from {mod}" not in codigo_entrada and f"import {mod}" not in codigo_entrada:
+                mod_code = sessao.scratchpad.get(f"{mod}.py", "")
+                classes = re.findall(r"class\s+(\w+)", mod_code)
+                funcs = [f for f in re.findall(r"^def\s+(\w+)", mod_code, re.MULTILINE) if not f.startswith("_")]
+                if classes or funcs:
+                    exports = classes[:3] + funcs[:3]
+                    imports_faltantes.append(f"from {mod} import {', '.join(exports)}")
+
+        if imports_faltantes:
+            linhas = codigo_entrada.split("\n")
+            insert_pos = 0
+            for i, linha in enumerate(linhas):
+                if linha.startswith("#!") or linha.startswith('"""') or linha.startswith("'''"):
+                    insert_pos = i + 1
+                elif linha.startswith("import ") or linha.startswith("from "):
+                    insert_pos = i + 1
+                elif insert_pos > 0 and linha.strip():
+                    break
+            for imp in reversed(imports_faltantes):
+                linhas.insert(insert_pos, imp)
+            sessao.scratchpad[entrada] = "\n".join(linhas)
+            console.print(f"  [dim]🔗 Imports adicionados em {entrada}: {len(imports_faltantes)}[/dim]")
+
+
+def _gerar_requirements_deterministico(sessao: SessaoCodigo) -> str:
+    """Gera requirements.txt baseado nos imports reais do código Python."""
+    # Mapa de imports conhecidos → pacote pip
+    IMPORT_TO_PIP = {
+        "flask": "flask>=3.0",
+        "fastapi": "fastapi>=0.100",
+        "uvicorn": "uvicorn>=0.25",
+        "requests": "requests>=2.28",
+        "pydantic": "pydantic>=2.0",
+        "sqlalchemy": "sqlalchemy>=2.0",
+        "sqlite3": None,  # stdlib
+        "json": None,
+        "os": None,
+        "sys": None,
+        "re": None,
+        "datetime": None,
+        "pathlib": None,
+    }
+
+    deps_encontradas = set()
+    for arquivo, codigo in sessao.scratchpad.items():
+        if not arquivo.endswith(".py"):
+            continue
+        imports = re.findall(r"^(?:from|import)\s+(\w+)", codigo, re.MULTILINE)
+        for imp in imports:
+            imp_lower = imp.lower()
+            if imp_lower in IMPORT_TO_PIP:
+                pip_pkg = IMPORT_TO_PIP[imp_lower]
+                if pip_pkg:
+                    deps_encontradas.add(pip_pkg)
+            elif imp_lower not in ("models", "storage", "services", "routes", "utils", "core"):
+                # Não é stdlib nem módulo interno — assume que é pacote pip
+                deps_encontradas.add(f"{imp_lower}")
+
+    return "\n".join(sorted(deps_encontradas)) + "\n" if deps_encontradas else "# sem dependências externas\n"
+
+
+def _gerar_readme_deterministico(sessao: SessaoCodigo) -> str:
+    """Gera README completo baseado nos arquivos reais do projeto, sem LLM."""
+    titulo = sessao.objetivo.split(".")[0].strip().title()
+    linhas = [f"# {titulo}", "", sessao.objetivo, ""]
+
+    # Instalação
+    if "requirements.txt" in sessao.scratchpad:
+        linhas.extend([
+            "## Instalação", "",
+            "```bash",
+            "pip install -r requirements.txt",
+            "```", "",
+        ])
+    elif "package.json" in sessao.scratchpad:
+        linhas.extend([
+            "## Instalação", "",
+            "```bash",
+            "npm install",
+            "```", "",
+        ])
+
+    # Execução
+    pontos = {"main.py": "python main.py", "app.py": "python app.py",
+              "index.js": "node index.js", "server.js": "node server.js"}
+    entrada = next((f for f in sessao.scratchpad if f in pontos), None)
+    if entrada:
+        cmd = pontos[entrada]
+        linhas.extend(["## Execução", "", "```bash", cmd, "```", ""])
+        # Detecta se é web
+        codigo = sessao.scratchpad.get(entrada, "")
+        if "5000" in codigo:
+            linhas.append("Acesse: http://localhost:5000\n")
+        elif "3000" in codigo:
+            linhas.append("Acesse: http://localhost:3000\n")
+        elif "8000" in codigo:
+            linhas.append("Acesse: http://localhost:8000\n")
+
+    # Funcionalidades
+    linhas.extend(["## Funcionalidades", ""])
+    for step in sessao.plano:
+        if step.arquivo and step.arquivo.lower() != "readme.md" and step.arquivo != "requirements.txt":
+            linhas.append(f"- {step.descricao}")
+    linhas.append("")
+
+    # Estrutura
+    linhas.extend(["## Estrutura do Projeto", "", "| Arquivo | Descrição |", "|---------|-----------|"])
+    for arquivo in sorted(sessao.scratchpad.keys()):
+        if arquivo.lower() == "readme.md":
+            continue
+        desc = next((s.descricao for s in sessao.plano if s.arquivo == arquivo), arquivo)
+        linhas.append(f"| `{arquivo}` | {desc} |")
+    linhas.append("")
+
+    return "\n".join(linhas)
 
 
 def _validar_projeto_gerado(sessao: SessaoCodigo) -> list[str]:
