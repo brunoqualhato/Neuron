@@ -30,6 +30,40 @@ Além do modo de chat, o projeto também inclui:
 - **template library** para geração de projetos estruturados;
 - **self-correction loop** para maximizar qualidade com modelos pequenos.
 
+## Exemplo de interação
+
+```text
+Você: como sacar o pino do coquilho traseiro do guindaste zulaine 75
+
+Potato-Claw: 🧠 Intenção: agente=pesquisador, web=True, ferramenta=None
+             🎯 pesquisador
+             🚀 Rápido (1.7B)
+             🔍 Buscando na web (rápido)...
+
+Para extrair o pino do coquilho traseiro do guindaste zulaine 75,
+siga estas etapas com base nas informações encontradas:
+
+1. **Localização correta**: O coquilho geralmente está posicionado na
+   parte traseira do equipamento, próximo ao eixo central ou à área de
+   trabalho principal.
+2. **Ferramentas necessárias**: Use uma serra de precisão ou uma
+   ferramenta adequada para acessar o pino com segurança.
+3. **Segurança em primeiro lugar**: Certifique-se de que o guindaste
+   esteja em posição estável antes de realizar qualquer movimento.
+4. **Referência visual**: Verifique os manuais do produto ou guias da
+   empresa para orientações específicas, pois podem variar.
+
+Se precisar de mais detalhes sobre o modelo exato ou instruções
+específicas da empresa, consulte a documentação técnica fornecida
+pela fabricante.
+
+🔗 Fonte consultada automaticamente via web RAG.
+```
+
+O sistema identificou que a pergunta exigia busca externa (`web=True`),
+selecionou o agente `pesquisador` e respondeu no nível 2 (modelo rápido)
+sem precisar acionar o modelo profundo.
+
 ## Arquitetura resumida
 
 ```text
